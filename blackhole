@@ -1,0 +1,192 @@
+-- =================================================================
+-- SCRIPT HỐ ĐEN - CÓ VÙNG AN TOÀN CHỐNG VA ĐẬP VÀO NGƯỜI
+-- =================================================================
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
+local blackHoleEnabled = false
+local currentPullStrength = 40
+local currentDistance = 90
+local currentShape = "Cầu Fibonacci"
+
+local blackHoleModel = nil
+local visualParts = {}
+
+local Window = Rayfield:CreateWindow({
+   Name = "BS Script - Hố Đen Chống Va Đập",
+   LoadingTitle = "Đang khởi tạo...",
+   LoadingSubtitle = "Bởi BS & Tiếng Việt hóa",
+   ConfigurationSaving = { Enabled = false },
+   KeySystem = false,
+})
+
+local TabChinh = Window:CreateTab("Điều khiển chính", 4483362458)
+
+TabChinh:CreateSection("Cài đặt hình dạng & Hút")
+
+TabChinh:CreateToggle({
+   Name = "Bật / Kích hoạt hố đen",
+   CurrentValue = false,
+   Flag = "ToggleShape",
+   Callback = function(Value)
+      blackHoleEnabled = Value
+      if not Value and blackHoleModel then
+         blackHoleModel:Destroy()
+         blackHoleModel = nil
+         visualParts = {}
+      end
+      Rayfield:Notify({Title = "Trạng thái", Content = Value and "Đã bật hố đen chống va đập!" or "Đã tắt hố đen!", Duration = 2})
+   end,
+})
+
+TabChinh:CreateDropdown({
+   Name = "Chọn hình dạng hố đen",
+   Options = {
+      "Cầu Fibonacci", 
+      "Hình ngôi sao", 
+      "Nhánh xoắn ốc", 
+      "Xếp chồng", 
+      "Hình xuyến", 
+      "Xoắn ốc kép"
+   },
+   CurrentOption = "Cầu Fibonacci",
+   Flag = "DropdownShape",
+   Callback = function(Option)
+      currentShape = Option[1]
+   end,
+})
+
+TabChinh:CreateSlider({
+   Name = "Khoảng cách hút",
+   Range = {10, 200},
+   Increment = 1,
+   CurrentValue = 90,
+   Flag = "SliderDist",
+   Callback = function(Value)
+      currentDistance = Value
+   end,
+})
+
+TabChinh:CreateSlider({
+   Name = "Sức hút",
+   Range = {5, 100},
+   Increment = 5,
+   CurrentValue = 40,
+   Flag = "SliderPull",
+   Callback = function(Value)
+      currentPullStrength = Value
+   end,
+})
+
+local function createVisualBlackHole()
+    if blackHoleModel then blackHoleModel:Destroy() end
+    blackHoleModel = Instance.new("Model")
+    blackHoleModel.Name = "VisualBlackHole"
+    blackHoleModel.Parent = workspace
+    
+    visualParts = {}
+    local numParts = 45
+    
+    for i = 1, numParts do
+        local part = Instance.new("Part")
+        part.Size = Vector3.new(0.9, 0.9, 0.9)
+        part.Shape = Enum.PartType.Ball
+        part.Material = Enum.Material.Neon
+        part.Color = Color3.fromRGB(140, 50, 255)
+        part.Anchored = true
+        part.CanCollide = false
+        part.Parent = blackHoleModel
+        table.insert(visualParts, part)
+    end
+end
+
+local angle = 0
+RunService.Heartbeat:Connect(function(dt)
+    if not blackHoleEnabled then return end
+    
+    local character = LocalPlayer.Character
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+    
+    local rootPart = character.HumanoidRootPart
+    local playerPos = rootPart.Position
+    
+    -- Hố đen nằm ở phía trước mặt 20 studs
+    local centerPos = playerPos + (rootPart.CFrame.LookVector * 20) + Vector3.new(0, 4, 0)
+
+    if not blackHoleModel or not blackHoleModel.Parent then
+        createVisualBlackHole()
+    end
+
+    angle = angle + dt * 3
+
+    for i, part in ipairs(visualParts) do
+        local pCount = #visualParts
+        local offset = Vector3.new(0, 0, 0)
+        
+        if currentShape == "Cầu Fibonacci" then
+            local phi = math.acos(1 - 2 * (i / pCount))
+            local theta = angle + i * (2.5 / math.sqrt(pCount))
+            local radius = 4.5
+            offset = Vector3.new(
+                radius * math.sin(phi) * math.cos(theta),
+                radius * math.cos(phi),
+                radius * math.sin(phi) * math.sin(theta)
+            )
+        elseif currentShape == "Hình ngôi sao" then
+            local t = (i / pCount) * math.pi * 2 + angle
+            local r = 3.5 + 2 * math.sin(5 * t)
+            offset = Vector3.new(r * math.cos(t), math.sin(i + angle) * 1.5, r * math.sin(t))
+        elseif currentShape == "Nhánh xoắn ốc" then
+            local t = (i / pCount) * math.pi * 4 + angle
+            offset = Vector3.new(t * 0.4 * math.cos(t), (i - pCount/2) * 0.25, t * 0.4 * math.sin(t))
+        else
+            local t = (i / pCount) * math.pi * 2 + angle
+            offset = Vector3.new(5 * math.cos(t), math.sin(t * 2) * 2, 5 * math.sin(t))
+        end
+        
+        part.Position = centerPos + offset
+    end
+
+    -- Xử lý vật thể
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("BasePart") and not obj.Anchored and obj.Parent ~= character and not obj:IsDescendantOf(character) then
+            if obj.Size.Magnitude < 45 then
+                local objPos = obj.Position
+                local distToPlayer = (playerPos - objPos).Magnitude
+                local distanceToHole = (centerPos - objPos).Magnitude
+                
+                -- VÙNG AN TOÀN: Nếu vật thể bay lại gần người chơi dưới 7 studs, lập tức đẩy văng nó ra xa người để không bị mất thăng bằng
+                if distToPlayer < 7 then
+                    pcall(function()
+                        if obj:CanSetNetworkOwnership() then
+                            obj:SetNetworkOwner(LocalPlayer)
+                        end
+                    end)
+                    local pushAway = (objPos - playerPos).Unit
+                    obj.AssemblyLinearVelocity = pushAway * 50
+                elseif distanceToHole <= currentDistance and distanceToHole > 2 then
+                    -- Nếu nằm trong tầm hút và ngoài vùng an toàn của người -> hút về hố đen
+                    pcall(function()
+                        if obj:CanSetNetworkOwnership() then
+                            obj:SetNetworkOwner(LocalPlayer)
+                        end
+                    end)
+                    
+                    local direction = (centerPos - objPos).Unit
+                    local tangent = Vector3.new(-direction.Z, 0, direction.X) * 15
+                    local pullForce = (direction * (currentPullStrength * (currentDistance / math.max(distanceToHole, 4)))) + tangent
+                    
+                    obj.AssemblyLinearVelocity = pullForce
+                elseif distanceToHole <= 2 then
+                    obj.AssemblyLinearVelocity = Vector3.new(0, 2, 0)
+                end
+            end
+        end
+    end
+end)
+
+Rayfield:LoadConfiguration()

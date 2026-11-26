@@ -11,7 +11,7 @@ local DODGE_SPEED = 240
 local DODGE_MARGIN = 24
 local LOOK_AHEAD_STUDS = 28
 local SKY_CLIMB_STUDS = 700
-local OBSTACLE_CHECK_START_STUDS = 400
+local OBSTACLE_CHECK_MAX_CLIMB_STUDS = 650
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -265,7 +265,7 @@ local function startFreezeAtCurrentSpot(hrp, overrideCFrame)
 end
 
 -- ==========================================
--- DÒ NHẸ BẰNG RAYCAST & BƯỚC NÉ VẬT CẢN
+-- DÒ NHẸ BẰNG RAYCAST & BƯỚC NÉ VẬT CẢN (DƯỚI 650 STUD)
 -- ==========================================
 local cachedRayParams = nil
 local cachedRayChar = nil
@@ -327,7 +327,7 @@ local function stepDodgeObstacle(currentPos, goalPos, hitRes, char)
 end
 
 -- ==========================================
--- TWEEN KHÔNG KHỰNG & CÓ NÉ VẬT CẢN
+-- TWEEN KHÔNG KHỰNG & NÉ VẬT CẢN DƯỚI 650 STUD
 -- ==========================================
 local function cancelActiveTween()
 	tweenToken += 1
@@ -375,7 +375,7 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 
 	local lastCheck = 0
 	local elapsed = 0
-	local maxWait = duration + 0.6
+	local maxWait = duration + 0.5
 	while not isUnloaded and not completed and not cancelled and activeTweenSequence and (tweenToken == myToken) do
 		local c = LocalPlayer.Character
 		local r = getHrp(c)
@@ -418,28 +418,31 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 	return completed, false, nil
 end
 
-local function moveSmoothlyWithDodge(goalCFrame, startBaseY, allowClimbCheck, myToken, verticalOnly)
+-- Chỉ dò & né khi độ cao leo thêm còn dưới 650 stud; lên trên 650 stud thì phóng thẳng lên targetY
+local function climbStraightToHeight(targetY, rotationCF, startBaseY, myToken)
 	local dodgeAttempts = 0
-	while not isUnloaded and activeTweenSequence and (tweenToken == myToken) and dodgeAttempts < 12 do
+	while not isUnloaded and activeTweenSequence and (tweenToken == myToken) do
 		local c = LocalPlayer.Character
 		local r = getHrp(c)
 		if not c or not r then return false end
-		if (r.Position - goalCFrame.Position).Magnitude <= 1.2 then return true end
+		if r.Position.Y >= targetY - 0.5 then return true end
 
-		local ok, shouldDodge, dodgePos = tweenSingleSegment(goalCFrame, myToken, function(currChar, currRoot, segGoal)
-			if allowClimbCheck and (currRoot.Position.Y - startBaseY) < OBSTACLE_CHECK_START_STUDS then
+		local goalCF = CFrame.new(r.Position.X, targetY, r.Position.Z) * rotationCF
+		local shouldCheckObstacle = ((r.Position.Y - startBaseY) < OBSTACLE_CHECK_MAX_CLIMB_STUDS) and (dodgeAttempts < 10)
+
+		local ok, shouldDodge, dodgePos = tweenSingleSegment(goalCF, myToken, shouldCheckObstacle and function(currChar, currRoot, segGoal)
+			if (currRoot.Position.Y - startBaseY) >= OBSTACLE_CHECK_MAX_CLIMB_STUDS then
 				return nil
 			end
-			local delta = segGoal - currRoot.Position
-			local dist = delta.Magnitude
-			if dist <= 0.1 then return nil end
-			local probeVec = (delta / dist) * math.min(dist, LOOK_AHEAD_STUDS)
-			local hit = castRay(currRoot.Position, probeVec, currChar)
+			local remY = segGoal.Y - currRoot.Position.Y
+			if remY <= 0.1 then return nil end
+			local upVec = Vector3.new(0, math.min(remY, LOOK_AHEAD_STUDS), 0)
+			local hit = castRay(currRoot.Position, upVec, currChar)
 			if hit then
 				return stepDodgeObstacle(currRoot.Position, segGoal, hit, currChar)
 			end
 			return nil
-		end, TWEEN_SPEED)
+		end or nil, TWEEN_SPEED)
 
 		if ok then return true end
 		if not (shouldDodge and dodgePos) then return false end
@@ -449,38 +452,12 @@ local function moveSmoothlyWithDodge(goalCFrame, startBaseY, allowClimbCheck, my
 		local r2 = getHrp(c2)
 		if not c2 or not r2 then return false end
 
-		local targetY = verticalOnly and r2.Position.Y or dodgePos.Y
-		local sideCF = CFrame.new(dodgePos.X, targetY, dodgePos.Z) * goalCFrame.Rotation
-		local sideOk = tweenSingleSegment(sideCF, myToken, function(currChar, currRoot, segGoal)
-			local delta = segGoal - currRoot.Position
-			local dist = delta.Magnitude
-			if dist <= 0.1 then return nil end
-			local probeVec = (delta / dist) * math.min(dist, LOOK_AHEAD_STUDS)
-			local hit = castRay(currRoot.Position, probeVec, currChar)
-			if hit then
-				return stepDodgeObstacle(currRoot.Position, segGoal, hit, currChar)
-			end
-			return nil
-		end, DODGE_SPEED)
-
-		if not sideOk then return false end
-	end
-
-	return false
-end
-
-local function climbStraightToHeight(targetY, rotationCF, startBaseY, myToken)
-	while not isUnloaded and activeTweenSequence and (tweenToken == myToken) do
-		local c = LocalPlayer.Character
-		local r = getHrp(c)
-		if not c or not r then return false end
-		if r.Position.Y >= targetY - 0.5 then return true end
-
-		local goalCF = CFrame.new(r.Position.X, targetY, r.Position.Z) * rotationCF
-		if not moveSmoothlyWithDodge(goalCF, startBaseY, true, myToken, true) then
+		local sideCF = CFrame.new(dodgePos.X, r2.Position.Y, dodgePos.Z) * rotationCF
+		if not tweenSingleSegment(sideCF, myToken, nil, DODGE_SPEED) then
 			return false
 		end
 	end
+
 	return false
 end
 
@@ -507,24 +484,24 @@ local function tweenViaSkyToTarget(targetCFrame, onComplete)
 		end
 
 		local startPos = hrp.Position
-		-- 1. Leo lên cao có dò & né vật cản, không bật noclip đụng part
+		-- 1. Leo lên +700 stud: né vật cản dưới 650 stud, trên 650 stud phóng thẳng
 		if not climbStraightToHeight(startPos.Y + SKY_CLIMB_STUDS, targetCFrame.Rotation, startPos.Y, myToken) then
 			if tweenToken == myToken then activeTweenSequence = false end
 			return
 		end
 		if abortIfDone() then return end
 
-		-- 2. Bay ngang trên cao có né vật cản
+		-- 2. Trên 650 stud không còn vật cản -> bay ngang thẳng tới X, Z của đích
 		local curRoot = getHrp(LocalPlayer.Character)
 		local climbY = curRoot and curRoot.Position.Y or (startPos.Y + SKY_CLIMB_STUDS)
 		local aboveTargetCF = CFrame.new(targetCFrame.Position.X, climbY, targetCFrame.Position.Z) * targetCFrame.Rotation
-		if not moveSmoothlyWithDodge(aboveTargetCF, startPos.Y, false, myToken, false) then
+		if not tweenSingleSegment(aboveTargetCF, myToken, nil, TWEEN_SPEED) then
 			if tweenToken == myToken then activeTweenSequence = false end
 			return
 		end
 		if abortIfDone() then return end
 
-		-- 3. Hạ thẳng xuống đích (bật noclip tạm thời ở chặng hạ cuối rồi tắt ngay)
+		-- 3. Hạ thẳng xuống đích
 		setNoclip(true)
 		local ok3 = tweenSingleSegment(targetCFrame, myToken, nil, TWEEN_SPEED)
 		setNoclip(false)

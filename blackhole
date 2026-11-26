@@ -74,6 +74,33 @@ local function zeroCharacterVelocity(char)
 	end
 end
 
+local function setTweenPhysicsLock(char, hrp, locked)
+	if not char then return end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.Sit = false
+		hum.PlatformStand = false
+		pcall(function()
+			if locked then
+				hum:ChangeState(Enum.HumanoidStateType.Physics)
+			elseif hum:GetState() ~= Enum.HumanoidStateType.Dead then
+				hum:ChangeState(Enum.HumanoidStateType.Running)
+			end
+		end)
+	end
+	if hrp then
+		hrp.Anchored = false
+		zeroCharacterVelocity(char)
+		if locked then
+			for _, child in ipairs(hrp:GetChildren()) do
+				if child:IsA("BodyMover") or child:IsA("LinearVelocity") or child:IsA("AngularVelocity") or child:IsA("VectorForce") or child:IsA("AlignPosition") or child:IsA("AlignOrientation") then
+					child:Destroy()
+				end
+			end
+		end
+	end
+end
+
 -- ==========================================
 -- TẠO 1 PLATFORM DUY NHẤT LÚC ĐẦU
 -- ==========================================
@@ -327,7 +354,7 @@ local function stepDodgeObstacle(currentPos, goalPos, hitRes, char)
 end
 
 -- ==========================================
--- TWEEN KHÔNG KHỰNG & NÉ VẬT CẢN DƯỚI 650 STUD
+-- TWEEN MƯỢT KHÔNG GIẬT & NÉ VẬT CẢN DƯỚI 650 STUD
 -- ==========================================
 local function cancelActiveTween()
 	tweenToken += 1
@@ -343,6 +370,8 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 	local char = LocalPlayer.Character
 	local hrp = getHrp(char)
 	if not isAliveChar(char) or not hrp then return false, false, nil end
+
+	setTweenPhysicsLock(char, hrp, true)
 
 	if currentTween then
 		currentTween:Cancel()
@@ -374,8 +403,8 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 	tween:Play()
 
 	local lastCheck = 0
-	local elapsed = 0
-	local maxWait = duration + 0.5
+	local startClock = os.clock()
+	local maxWait = duration + 0.35
 	while not isUnloaded and not completed and not cancelled and activeTweenSequence and (tweenToken == myToken) do
 		local c = LocalPlayer.Character
 		local r = getHrp(c)
@@ -396,17 +425,14 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 			end
 		end
 
-		if elapsed >= maxWait then
+		if (os.clock() - startClock) >= maxWait then
 			if conn then conn:Disconnect() end
 			tween:Cancel()
-			if not onStepCheck then
-				r.CFrame = targetCFrame
-				return true, false, nil
-			end
-			return false, false, nil
+			r.CFrame = targetCFrame
+			return true, false, nil
 		end
 
-		elapsed += RunService.Heartbeat:Wait()
+		RunService.Heartbeat:Wait()
 	end
 
 	if conn then conn:Disconnect() end
@@ -418,7 +444,6 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 	return completed, false, nil
 end
 
--- Chỉ dò & né khi độ cao leo thêm còn dưới 650 stud; lên trên 650 stud thì phóng thẳng lên targetY
 local function climbStraightToHeight(targetY, rotationCF, startBaseY, myToken)
 	local dodgeAttempts = 0
 	while not isUnloaded and activeTweenSequence and (tweenToken == myToken) do
@@ -428,7 +453,7 @@ local function climbStraightToHeight(targetY, rotationCF, startBaseY, myToken)
 		if r.Position.Y >= targetY - 0.5 then return true end
 
 		local goalCF = CFrame.new(r.Position.X, targetY, r.Position.Z) * rotationCF
-		local shouldCheckObstacle = ((r.Position.Y - startBaseY) < OBSTACLE_CHECK_MAX_CLIMB_STUDS) and (dodgeAttempts < 10)
+		local shouldCheckObstacle = ((r.Position.Y - startBaseY) < OBSTACLE_CHECK_MAX_CLIMB_STUDS) and (dodgeAttempts < 8)
 
 		local ok, shouldDodge, dodgePos = tweenSingleSegment(goalCF, myToken, shouldCheckObstacle and function(currChar, currRoot, segGoal)
 			if (currRoot.Position.Y - startBaseY) >= OBSTACLE_CHECK_MAX_CLIMB_STUDS then
@@ -469,44 +494,45 @@ local function tweenViaSkyToTarget(targetCFrame, onComplete)
 
 	cancelActiveTween()
 	stopFreeze()
-	setNoclip(false)
+	setTweenPhysicsLock(char, hrp, true)
+	setNoclip(true)
 
 	local myToken = tweenToken
 	activeTweenSequence = true
 
 	task.spawn(function()
+		local function cleanupFail()
+			if tweenToken == myToken then activeTweenSequence = false end
+			setNoclip(false)
+			setTweenPhysicsLock(LocalPlayer.Character, getHrp(LocalPlayer.Character), false)
+		end
+
 		local function abortIfDone()
 			if isUnloaded or tweenToken ~= myToken then
-				if tweenToken == myToken then activeTweenSequence = false end
+				cleanupFail()
 				return true
 			end
 			return false
 		end
 
 		local startPos = hrp.Position
-		-- 1. Leo lên +700 stud: né vật cản dưới 650 stud, trên 650 stud phóng thẳng
 		if not climbStraightToHeight(startPos.Y + SKY_CLIMB_STUDS, targetCFrame.Rotation, startPos.Y, myToken) then
-			if tweenToken == myToken then activeTweenSequence = false end
+			cleanupFail()
 			return
 		end
 		if abortIfDone() then return end
 
-		-- 2. Trên 650 stud không còn vật cản -> bay ngang thẳng tới X, Z của đích
 		local curRoot = getHrp(LocalPlayer.Character)
 		local climbY = curRoot and curRoot.Position.Y or (startPos.Y + SKY_CLIMB_STUDS)
 		local aboveTargetCF = CFrame.new(targetCFrame.Position.X, climbY, targetCFrame.Position.Z) * targetCFrame.Rotation
 		if not tweenSingleSegment(aboveTargetCF, myToken, nil, TWEEN_SPEED) then
-			if tweenToken == myToken then activeTweenSequence = false end
+			cleanupFail()
 			return
 		end
 		if abortIfDone() then return end
 
-		-- 3. Hạ thẳng xuống đích
-		setNoclip(true)
-		local ok3 = tweenSingleSegment(targetCFrame, myToken, nil, TWEEN_SPEED)
-		setNoclip(false)
-		if not ok3 then
-			if tweenToken == myToken then activeTweenSequence = false end
+		if not tweenSingleSegment(targetCFrame, myToken, nil, TWEEN_SPEED) then
+			cleanupFail()
 			return
 		end
 		if abortIfDone() then return end
@@ -515,9 +541,12 @@ local function tweenViaSkyToTarget(targetCFrame, onComplete)
 		local finalChar = LocalPlayer.Character
 		local finalRoot = getHrp(finalChar)
 		if finalChar and finalRoot then
-			zeroCharacterVelocity(finalChar)
 			finalRoot.CFrame = targetCFrame
+			zeroCharacterVelocity(finalChar)
 			if onComplete then onComplete(finalChar, finalRoot, targetCFrame) end
+			if not frozenCFrame then
+				setTweenPhysicsLock(finalChar, finalRoot, false)
+			end
 		end
 	end)
 end

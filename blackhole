@@ -51,6 +51,28 @@ local function isAliveChar(char)
 	return hum:GetState() ~= Enum.HumanoidStateType.Dead
 end
 
+-- Dò mặt đất ngay dưới chân để tránh lưu nhầm tọa độ khi đang nhảy / trên không
+local function resolveGroundPoint(originPos, char)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	local ignoreList = {}
+	if char then
+		table.insert(ignoreList, char)
+	end
+	local plat = workspace:FindFirstChild(PLATFORM_NAME)
+	if plat then
+		table.insert(ignoreList, plat)
+	end
+	params.FilterDescendantsInstances = ignoreList
+
+	local rayOrigin = originPos + Vector3.new(0, 3, 0)
+	local result = workspace:Raycast(rayOrigin, Vector3.new(0, -150, 0), params)
+	if result then
+		return result.Position
+	end
+	return originPos
+end
+
 -- ==========================================
 -- TẠO 1 PLATFORM DUY NHẤT LÚC ĐẦU (GIỮ NGUYÊN, KHÔNG DI CHUYỂN)
 -- ==========================================
@@ -92,11 +114,13 @@ local SYNC_PREFIX = "__SKYPLAT_POINT__:"
 
 local function parseSyncMessage(msg)
 	if typeof(msg) ~= "string" then return nil end
-	if string.sub(msg, 1, #SYNC_PREFIX) ~= SYNC_PREFIX then return nil end
-	local body = string.sub(msg, #SYNC_PREFIX + 1)
-	local x, y, z = string.match(body, "^([%-?%d%.]+),([%-?%d%.]+),([%-?%d%.]+)$")
-	if x and y and z then
-		return Vector3.new(tonumber(x), tonumber(y), tonumber(z))
+	local idx = string.find(msg, SYNC_PREFIX, 1, true)
+	if not idx then return nil end
+	local body = string.sub(msg, idx + #SYNC_PREFIX)
+	local x, y, z = string.match(body, "^%s*([%-+%d%.]+)%s*,%s*([%-+%d%.]+)%s*,%s*([%-+%d%.]+)%s*")
+	local nx, ny, nz = tonumber(x), tonumber(y), tonumber(z)
+	if nx and ny and nz then
+		return Vector3.new(nx, ny, nz)
 	end
 	return nil
 end
@@ -145,14 +169,14 @@ if role == "alt" then
 	end)
 end
 
--- Ấn nút SET PLATFORM: chỉ lưu điểm hiện tại + gửi __SKYPLAT_POINT__ (không tạo/dời platform)
+-- Ấn nút SET PLATFORM: lưu điểm sát mặt đất hiện tại + gửi __SKYPLAT_POINT__
 local function setPointOnly()
 	if role ~= "owner" then return end
 	local char = LocalPlayer.Character
 	if not isAliveChar(char) then return end
 	local hrp = char:FindFirstChild("HumanoidRootPart")
 
-	customSetPoint = hrp.Position
+	customSetPoint = resolveGroundPoint(hrp.Position, char)
 	if setPlatformFeedback then
 		setPlatformFeedback(customSetPoint)
 	end

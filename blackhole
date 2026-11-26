@@ -37,26 +37,6 @@ local savedOriginCFrame = nil
 local refreshActionButtonText = nil
 local setPlatformFeedback = nil
 
-local function sendChatNotice(text)
-	pcall(function()
-		if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-			local general = TextChatService:FindFirstChild("TextChannels")
-				and (TextChatService.TextChannels:FindFirstChild("RBXGeneral") or TextChatService.TextChannels:GetChildren()[1])
-			if general and general:IsA("TextChannel") then
-				general:SendAsync(text)
-				return
-			end
-		end
-	end)
-	pcall(function()
-		local chatEvents = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
-		local sayMsg = chatEvents and chatEvents:FindFirstChild("SayMessageRequest")
-		if sayMsg then
-			sayMsg:FireServer(text, "All")
-		end
-	end)
-end
-
 local function isAliveChar(char)
 	if not char or not char.Parent then return false end
 	local hum = char:FindFirstChildOfClass("Humanoid")
@@ -101,7 +81,66 @@ end
 
 initInitialPlatform()
 
--- Ấn nút SET PLATFORM: chỉ lưu điểm hiện tại + báo lên chat (không tạo/dời platform)
+-- ==========================================
+-- GỬI & KIỂM TRA TIN NHẮN CHAT ĐỒNG BỘ ĐIỂM SET
+-- ==========================================
+local SYNC_PREFIX = "__SKYPLAT_POINT__:"
+
+local function parseSyncMessage(msg)
+	if typeof(msg) ~= "string" then return nil end
+	if string.sub(msg, 1, #SYNC_PREFIX) ~= SYNC_PREFIX then return nil end
+	local body = string.sub(msg, #SYNC_PREFIX + 1)
+	local x, y, z = string.match(body, "^([%-?%d%.]+),([%-?%d%.]+),([%-?%d%.]+)$")
+	if x and y and z then
+		return Vector3.new(tonumber(x), tonumber(y), tonumber(z))
+	end
+	return nil
+end
+
+local function sendChatText(text)
+	pcall(function()
+		if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+			local general = TextChatService:FindFirstChild("TextChannels")
+				and (TextChatService.TextChannels:FindFirstChild("RBXGeneral") or TextChatService.TextChannels:GetChildren()[1])
+			if general and general:IsA("TextChannel") then
+				general:SendAsync(text)
+				return
+			end
+		end
+	end)
+	pcall(function()
+		local chatEvents = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+		local sayMsg = chatEvents and chatEvents:FindFirstChild("SayMessageRequest")
+		if sayMsg then
+			sayMsg:FireServer(text, "All")
+		end
+	end)
+end
+
+if role == "alt" then
+	pcall(function()
+		TextChatService.MessageReceived:Connect(function(textChatMessage)
+			local sender = textChatMessage.TextSource and Players:GetPlayerByUserId(textChatMessage.TextSource.UserId)
+			if sender and sender.Name == OwnerName then
+				local pos = parseSyncMessage(textChatMessage.Text)
+				if pos then
+					customSetPoint = pos
+				end
+			end
+		end)
+	end)
+
+	Players.PlayerChatted:Connect(function(_, sender, message)
+		if sender and sender.Name == OwnerName then
+			local pos = parseSyncMessage(message)
+			if pos then
+				customSetPoint = pos
+			end
+		end
+	end)
+end
+
+-- Ấn nút SET PLATFORM: chỉ lưu điểm hiện tại + báo chat & đồng bộ máy phụ (không tạo/dời platform)
 local function setPointOnly()
 	if role ~= "owner" then return end
 	local char = LocalPlayer.Character
@@ -113,7 +152,8 @@ local function setPointOnly()
 		setPlatformFeedback(customSetPoint)
 	end
 
-	sendChatNotice(string.format(
+	sendChatText(string.format("%s%.2f,%.2f,%.2f", SYNC_PREFIX, customSetPoint.X, customSetPoint.Y, customSetPoint.Z))
+	sendChatText(string.format(
 		"[Platform] Đã set điểm: %d, %d, %d",
 		math.round(customSetPoint.X),
 		math.round(customSetPoint.Y),

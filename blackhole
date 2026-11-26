@@ -82,7 +82,7 @@ end
 initInitialPlatform()
 
 -- ==========================================
--- GỬI & KIỂM TRA TIN NHẮN CHAT ĐỒNG BỘ ĐIỂM SET
+-- ĐỒNG BỘ ĐIỂM SET QUA CHAT (__SKYPLAT_POINT__)
 -- ==========================================
 local SYNC_PREFIX = "__SKYPLAT_POINT__:"
 
@@ -97,13 +97,14 @@ local function parseSyncMessage(msg)
 	return nil
 end
 
-local function sendChatText(text)
+local function sendSyncChat(vec3)
+	local payload = string.format("%s%.2f,%.2f,%.2f", SYNC_PREFIX, vec3.X, vec3.Y, vec3.Z)
 	pcall(function()
 		if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
 			local general = TextChatService:FindFirstChild("TextChannels")
 				and (TextChatService.TextChannels:FindFirstChild("RBXGeneral") or TextChatService.TextChannels:GetChildren()[1])
 			if general and general:IsA("TextChannel") then
-				general:SendAsync(text)
+				general:SendAsync(payload)
 				return
 			end
 		end
@@ -112,7 +113,7 @@ local function sendChatText(text)
 		local chatEvents = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
 		local sayMsg = chatEvents and chatEvents:FindFirstChild("SayMessageRequest")
 		if sayMsg then
-			sayMsg:FireServer(text, "All")
+			sayMsg:FireServer(payload, "All")
 		end
 	end)
 end
@@ -140,7 +141,7 @@ if role == "alt" then
 	end)
 end
 
--- Ấn nút SET PLATFORM: chỉ lưu điểm hiện tại + báo chat & đồng bộ máy phụ (không tạo/dời platform)
+-- Ấn nút SET PLATFORM: chỉ lưu điểm hiện tại + gửi __SKYPLAT_POINT__ (không tạo/dời platform)
 local function setPointOnly()
 	if role ~= "owner" then return end
 	local char = LocalPlayer.Character
@@ -152,13 +153,7 @@ local function setPointOnly()
 		setPlatformFeedback(customSetPoint)
 	end
 
-	sendChatText(string.format("%s%.2f,%.2f,%.2f", SYNC_PREFIX, customSetPoint.X, customSetPoint.Y, customSetPoint.Z))
-	sendChatText(string.format(
-		"[Platform] Đã set điểm: %d, %d, %d",
-		math.round(customSetPoint.X),
-		math.round(customSetPoint.Y),
-		math.round(customSetPoint.Z)
-	))
+	sendSyncChat(customSetPoint)
 end
 
 -- ==========================================

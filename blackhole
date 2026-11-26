@@ -6,10 +6,12 @@ local OwnerName = "tinhtrungcovij"
 local FIXED_PLATFORM_POS = Vector3.new(0, 1000, 0)
 local PLATFORM_SIZE = Vector3.new(200, 2, 200)
 local PLATFORM_NAME = "SharedSkyPlatform_Client"
-local TWEEN_SPEED = 200 -- studs / giây
-local SKY_CLIMB_STUDS = 700 -- bay thẳng đứng lên trời 700 stud trước khi tween tới vị trí
-local OBSTACLE_CHECK_START_STUDS = 400 -- bay lên dc tầm 400 stud thì bắt đầu check vật cản xung quanh
-local OBSTACLE_CHECK_RADIUS = 10 -- phạm vi 10 stud xung quanh
+local TWEEN_SPEED = 320
+local DODGE_SPEED = 160
+local DODGE_MARGIN = 22
+local SKY_CLIMB_STUDS = 700
+local OBSTACLE_CHECK_START_STUDS = 400
+local OBSTACLE_CHECK_RADIUS = 12
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -37,9 +39,7 @@ local tweenToken = 0
 
 local connections = {}
 local function trackConn(conn)
-	if conn then
-		table.insert(connections, conn)
-	end
+	if conn then table.insert(connections, conn) end
 	return conn
 end
 
@@ -49,14 +49,15 @@ local refreshActionButtonText = nil
 local setPlatformFeedback = nil
 local activeGui = nil
 
+local function getHrp(char)
+	return char and char:FindFirstChild("HumanoidRootPart")
+end
+
 local function isAliveChar(char)
 	if isUnloaded or not char or not char.Parent then return false end
 	local hum = char:FindFirstChildOfClass("Humanoid")
-	local hrp = char:FindFirstChild("HumanoidRootPart")
-	if not hum or not hrp or not hum.Parent or not hrp.Parent then
-		return false
-	end
-	return hum:GetState() ~= Enum.HumanoidStateType.Dead
+	local hrp = getHrp(char)
+	return hum and hrp and hum.Parent and hrp.Parent and hum:GetState() ~= Enum.HumanoidStateType.Dead
 end
 
 local function zeroCharacterVelocity(char)
@@ -80,9 +81,7 @@ local skyPlatform = nil
 
 local function initInitialPlatform()
 	if isUnloaded then return nil end
-	if skyPlatform and skyPlatform.Parent then
-		return skyPlatform
-	end
+	if skyPlatform and skyPlatform.Parent then return skyPlatform end
 
 	local existing = workspace:FindFirstChild(PLATFORM_NAME)
 	if existing and existing:IsA("BasePart") then
@@ -120,10 +119,7 @@ local function parseSyncMessage(msg)
 	local body = string.sub(msg, idx + #SYNC_PREFIX)
 	local x, y, z = string.match(body, "^%s*([%-+%d%.]+)%s*,%s*([%-+%d%.]+)%s*,%s*([%-+%d%.]+)%s*")
 	local nx, ny, nz = tonumber(x), tonumber(y), tonumber(z)
-	if nx and ny and nz then
-		return Vector3.new(nx, ny, nz)
-	end
-	return nil
+	return (nx and ny and nz) and Vector3.new(nx, ny, nz) or nil
 end
 
 local function sendSyncChat(vec3)
@@ -142,22 +138,18 @@ local function sendSyncChat(vec3)
 	pcall(function()
 		local chatEvents = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
 		local sayMsg = chatEvents and chatEvents:FindFirstChild("SayMessageRequest")
-		if sayMsg then
-			sayMsg:FireServer(payload, "All")
-		end
+		if sayMsg then sayMsg:FireServer(payload, "All") end
 	end)
 end
 
 if role == "alt" then
 	pcall(function()
-		trackConn(TextChatService.MessageReceived:Connect(function(textChatMessage)
+		trackConn(TextChatService.MessageReceived:Connect(function(msg)
 			if isUnloaded then return end
-			local sender = textChatMessage.TextSource and Players:GetPlayerByUserId(textChatMessage.TextSource.UserId)
+			local sender = msg.TextSource and Players:GetPlayerByUserId(msg.TextSource.UserId)
 			if sender and sender.Name == OwnerName then
-				local pos = parseSyncMessage(textChatMessage.Text)
-				if pos then
-					customSetPoint = pos
-				end
+				local pos = parseSyncMessage(msg.Text)
+				if pos then customSetPoint = pos end
 			end
 		end))
 	end)
@@ -166,9 +158,7 @@ if role == "alt" then
 		if isUnloaded then return end
 		if sender and sender.Name == OwnerName then
 			local pos = parseSyncMessage(message)
-			if pos then
-				customSetPoint = pos
-			end
+			if pos then customSetPoint = pos end
 		end
 	end))
 end
@@ -177,13 +167,8 @@ local function setPointOnly()
 	if isUnloaded or role ~= "owner" then return end
 	local char = LocalPlayer.Character
 	if not isAliveChar(char) then return end
-	local hrp = char:FindFirstChild("HumanoidRootPart")
-
-	customSetPoint = hrp.Position
-	if setPlatformFeedback then
-		setPlatformFeedback(customSetPoint)
-	end
-
+	customSetPoint = getHrp(char).Position
+	if setPlatformFeedback then setPlatformFeedback(customSetPoint) end
 	sendSyncChat(customSetPoint)
 end
 
@@ -198,19 +183,13 @@ local function setNoclip(enabled)
 
 	if enabled and not isUnloaded then
 		noclipConn = RunService.Stepped:Connect(function()
-			if isUnloaded then return end
-			local char = LocalPlayer.Character
-			if not char then return end
-			for _, obj in ipairs(char:GetDescendants()) do
-				if obj:IsA("BasePart") then
-					obj.CanCollide = false
-				end
+			if isUnloaded or not LocalPlayer.Character then return end
+			for _, obj in ipairs(LocalPlayer.Character:GetDescendants()) do
+				if obj:IsA("BasePart") then obj.CanCollide = false end
 			end
 		end)
-	else
-		local char = LocalPlayer.Character
-		if not char then return end
-		for _, obj in ipairs(char:GetDescendants()) do
+	elseif LocalPlayer.Character then
+		for _, obj in ipairs(LocalPlayer.Character:GetDescendants()) do
 			if obj:IsA("BasePart") and obj.Name ~= "HumanoidRootPart" then
 				obj.CanCollide = true
 			end
@@ -219,14 +198,8 @@ local function setNoclip(enabled)
 end
 
 local function stopFreeze()
-	if freezeRenderConn then
-		freezeRenderConn:Disconnect()
-		freezeRenderConn = nil
-	end
-	if freezeHeartConn then
-		freezeHeartConn:Disconnect()
-		freezeHeartConn = nil
-	end
+	if freezeRenderConn then freezeRenderConn:Disconnect(); freezeRenderConn = nil end
+	if freezeHeartConn then freezeHeartConn:Disconnect(); freezeHeartConn = nil end
 	frozenCFrame = nil
 
 	local char = LocalPlayer.Character
@@ -239,19 +212,16 @@ local function stopFreeze()
 				hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
 			end)
 		end
-		local hrp = char:FindFirstChild("HumanoidRootPart")
-		if hrp and hrp:IsA("BasePart") then
-			hrp.Anchored = false
-		end
+		local hrp = getHrp(char)
+		if hrp and hrp:IsA("BasePart") then hrp.Anchored = false end
 	end
 end
 
 local function lockRootInPlace()
 	if isUnloaded then return end
 	local char = LocalPlayer.Character
-	if not char then return end
-	local hrp = char:FindFirstChild("HumanoidRootPart")
-	local hum = char:FindFirstChildOfClass("Humanoid")
+	local hrp = getHrp(char)
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	if not hrp or not frozenCFrame then return end
 
 	if hum then
@@ -284,48 +254,42 @@ local function startFreezeAtCurrentSpot(hrp, overrideCFrame)
 	lockRootInPlace()
 
 	freezeRenderConn = RunService.RenderStepped:Connect(function()
-		if isUnloaded or not frozenCFrame then
-			stopFreeze()
-			return
-		end
+		if isUnloaded or not frozenCFrame then stopFreeze(); return end
 		lockRootInPlace()
 	end)
 
 	freezeHeartConn = RunService.Heartbeat:Connect(function()
-		if isUnloaded or not frozenCFrame then
-			stopFreeze()
-			return
-		end
+		if isUnloaded or not frozenCFrame then stopFreeze(); return end
 		lockRootInPlace()
 	end)
 end
 
 -- ==========================================
--- KIỂM TRA VẬT CẢN & TÌM ĐIỂM NÉ
+-- KIỂM TRA VẬT CẢN & TÌM ĐIỂM NÉ AN TOÀN
 -- ==========================================
+local HORIZONTAL_DIRS = {
+	Vector3.new(1, 0, 0), Vector3.new(-1, 0, 0),
+	Vector3.new(0, 0, 1), Vector3.new(0, 0, -1),
+	Vector3.new(1, 0, 1).Unit, Vector3.new(-1, 0, 1).Unit,
+	Vector3.new(1, 0, -1).Unit, Vector3.new(-1, 0, -1).Unit,
+}
+
 local function buildObstacleParams(char)
 	local params = OverlapParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	local ignore = {}
-	if char then
-		table.insert(ignore, char)
-	end
-	if skyPlatform and skyPlatform.Parent then
-		table.insert(ignore, skyPlatform)
-	end
+	if char then table.insert(ignore, char) end
+	if skyPlatform and skyPlatform.Parent then table.insert(ignore, skyPlatform) end
 	for _, plr in ipairs(Players:GetPlayers()) do
-		if plr.Character then
-			table.insert(ignore, plr.Character)
-		end
+		if plr.Character then table.insert(ignore, plr.Character) end
 	end
 	params.FilterDescendantsInstances = ignore
 	return params
 end
 
 local function getBlockingPartAround(pos, radius, char)
-	local params = buildObstacleParams(char)
 	local boxSize = Vector3.new(radius * 2, radius * 2, radius * 2)
-	local parts = workspace:GetPartBoundsInBox(CFrame.new(pos), boxSize, params)
+	local parts = workspace:GetPartBoundsInBox(CFrame.new(pos), boxSize, buildObstacleParams(char))
 	for _, p in ipairs(parts) do
 		if p:IsA("BasePart") and p.CanCollide and p.Transparency < 0.95 then
 			return p
@@ -341,35 +305,23 @@ end
 local function findClearHorizontalPosition(currentPos, radius, char)
 	local blocker = getBlockingPartAround(currentPos, radius, char)
 	local anchor = blocker and blocker.Position or currentPos
-	local halfSpan = blocker and math.max(blocker.Size.X, blocker.Size.Z) * 0.5 or 0
+	local halfSpan = blocker and (math.max(blocker.Size.X, blocker.Size.Y, blocker.Size.Z) * 0.5) or 0
 
-	local directions = {
-		Vector3.new(1, 0, 0),
-		Vector3.new(-1, 0, 0),
-		Vector3.new(0, 0, 1),
-		Vector3.new(0, 0, -1),
-		Vector3.new(1, 0, 1).Unit,
-		Vector3.new(-1, 0, 1).Unit,
-		Vector3.new(1, 0, -1).Unit,
-		Vector3.new(-1, 0, -1).Unit,
-	}
-
-	local extraSteps = { halfSpan + 14, halfSpan + 24, halfSpan + 38, halfSpan + 55 }
-	for _, dist in ipairs(extraSteps) do
-		for _, dir in ipairs(directions) do
-			local candidate = anchor + (dir * dist)
-			candidate = Vector3.new(candidate.X, currentPos.Y, candidate.Z)
-			if not hasObstacleAround(candidate, radius, char) then
+	for _, offset in ipairs({ 0, 16, 32, 52 }) do
+		local dist = halfSpan + DODGE_MARGIN + offset
+		for _, dir in ipairs(HORIZONTAL_DIRS) do
+			local candidate = Vector3.new(anchor.X + dir.X * dist, currentPos.Y, anchor.Z + dir.Z * dist)
+			if not hasObstacleAround(candidate, radius + 4, char) then
 				return candidate
 			end
 		end
 	end
 
-	return currentPos + Vector3.new(halfSpan + 25, 0, 0)
+	return Vector3.new(currentPos.X + halfSpan + DODGE_MARGIN + 15, currentPos.Y, currentPos.Z)
 end
 
 -- ==========================================
--- TWEEN 3 CHẶNG
+-- TWEEN CÓ TỐC ĐỘ NÉ RIÊNG & KIỂM TRA VẬT CẢN
 -- ==========================================
 local function cancelActiveTween()
 	tweenToken += 1
@@ -380,12 +332,11 @@ local function cancelActiveTween()
 	end
 end
 
-local function tweenSingleSegment(targetCFrame, myToken, onStepCheck)
+local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpeed)
 	if isUnloaded then return false, false end
 	local char = LocalPlayer.Character
-	if not isAliveChar(char) then return false, false end
-	local hrp = char:FindFirstChild("HumanoidRootPart")
-	if not hrp then return false, false end
+	local hrp = getHrp(char)
+	if not isAliveChar(char) or not hrp then return false, false end
 
 	if currentTween then
 		currentTween:Cancel()
@@ -393,52 +344,46 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck)
 	end
 
 	local distance = (hrp.Position - targetCFrame.Position).Magnitude
-	local duration = math.max(distance / TWEEN_SPEED, 0.03)
+	if distance <= 0.25 then
+		hrp.CFrame = targetCFrame
+		return true, false, nil
+	end
 
-	local completed = false
-	local cancelled = false
-	local needDodgePos = nil
-
-	local info = TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
-	local tween = TweenService:Create(hrp, info, { CFrame = targetCFrame })
+	local completed, cancelled = false, false
+	local tween = TweenService:Create(
+		hrp,
+		TweenInfo.new(math.max(distance / (customSpeed or TWEEN_SPEED), 0.02), Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
+		{ CFrame = targetCFrame }
+	)
 	currentTween = tween
 
 	tween.Completed:Connect(function(state)
-		if currentTween == tween then
-			currentTween = nil
-		end
-		if state == Enum.PlaybackState.Completed then
-			completed = true
-		else
-			cancelled = true
-		end
+		if currentTween == tween then currentTween = nil end
+		if state == Enum.PlaybackState.Completed then completed = true else cancelled = true end
 	end)
 
 	tween:Play()
 
+	local lastCheck = 0
 	while not isUnloaded and not completed and not cancelled and activeTweenSequence and (tweenToken == myToken) do
 		local c = LocalPlayer.Character
-		local r = c and c:FindFirstChild("HumanoidRootPart")
-		if not c or not c.Parent or not r or not r.Parent then
-			tween:Cancel()
-			return false, false
-		end
-		local h = c:FindFirstChildOfClass("Humanoid")
-		if not h or h:GetState() == Enum.HumanoidStateType.Dead then
+		local r = getHrp(c)
+		local h = c and c:FindFirstChildOfClass("Humanoid")
+		if not c or not c.Parent or not r or not r.Parent or not h or h:GetState() == Enum.HumanoidStateType.Dead then
 			tween:Cancel()
 			return false, false
 		end
 
-		if onStepCheck then
+		if onStepCheck and (os.clock() - lastCheck) >= 0.06 then
+			lastCheck = os.clock()
 			local dodgePos = onStepCheck(c, r)
 			if dodgePos then
-				needDodgePos = dodgePos
 				tween:Cancel()
-				return false, true, needDodgePos
+				return false, true, dodgePos
 			end
 		end
 
-		task.wait()
+		RunService.Heartbeat:Wait()
 	end
 
 	if isUnloaded then
@@ -449,58 +394,68 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck)
 	return completed and activeTweenSequence and (tweenToken == myToken), false, nil
 end
 
+local function moveSmoothlyWithDodge(goalCFrame, startBaseY, allowClimbCheck, myToken)
+	local dodgeAttempts = 0
+	while not isUnloaded and activeTweenSequence and (tweenToken == myToken) and dodgeAttempts < 12 do
+		local c = LocalPlayer.Character
+		local r = getHrp(c)
+		if not c or not r then return false end
+		if (r.Position - goalCFrame.Position).Magnitude <= 1.2 then return true end
+
+		local ok, shouldDodge, dodgePos = tweenSingleSegment(goalCFrame, myToken, function(currChar, currRoot)
+			if allowClimbCheck and (currRoot.Position.Y - startBaseY) < OBSTACLE_CHECK_START_STUDS then
+				return nil
+			end
+			if hasObstacleAround(currRoot.Position, OBSTACLE_CHECK_RADIUS, currChar) then
+				return findClearHorizontalPosition(currRoot.Position, OBSTACLE_CHECK_RADIUS, currChar)
+			end
+			return nil
+		end, TWEEN_SPEED)
+
+		if ok then return true end
+		if not (shouldDodge and dodgePos) then return false end
+
+		dodgeAttempts += 1
+		local c2 = LocalPlayer.Character
+		local r2 = getHrp(c2)
+		if not c2 or not r2 then return false end
+
+		local safeDodgePos = hasObstacleAround(dodgePos, OBSTACLE_CHECK_RADIUS, c2)
+			and findClearHorizontalPosition(dodgePos, OBSTACLE_CHECK_RADIUS, c2)
+			or dodgePos
+
+		local sideCF = CFrame.new(safeDodgePos.X, r2.Position.Y, safeDodgePos.Z) * goalCFrame.Rotation
+		local sideOk = tweenSingleSegment(sideCF, myToken, function(currChar, currRoot)
+			if hasObstacleAround(currRoot.Position, OBSTACLE_CHECK_RADIUS, currChar) then
+				return findClearHorizontalPosition(currRoot.Position, OBSTACLE_CHECK_RADIUS, currChar)
+			end
+			return nil
+		end, DODGE_SPEED)
+
+		if not sideOk then return false end
+	end
+
+	return false
+end
+
 local function climbStraightToHeight(targetY, rotationCF, startBaseY, myToken)
 	while not isUnloaded and activeTweenSequence and (tweenToken == myToken) do
 		local c = LocalPlayer.Character
-		local r = c and c:FindFirstChild("HumanoidRootPart")
+		local r = getHrp(c)
 		if not c or not r then return false end
+		if r.Position.Y >= targetY - 0.5 then return true end
 
-		local curPos = r.Position
-		if curPos.Y >= targetY - 0.5 then
-			return true
-		end
-
-		local goalCF = CFrame.new(curPos.X, targetY, curPos.Z) * rotationCF
-		local checkedThisClimb = false
-
-		local ok, shouldDodge, dodgePos = tweenSingleSegment(goalCF, myToken, function(currChar, currRoot)
-			local climbedStuds = currRoot.Position.Y - startBaseY
-			if climbedStuds >= OBSTACLE_CHECK_START_STUDS and not checkedThisClimb then
-				checkedThisClimb = true
-				if hasObstacleAround(currRoot.Position, OBSTACLE_CHECK_RADIUS, currChar) then
-					return findClearHorizontalPosition(currRoot.Position, OBSTACLE_CHECK_RADIUS, currChar)
-				end
-			end
-			return nil
-		end)
-
-		if ok then
-			return true
-		end
-
-		if shouldDodge and dodgePos then
-			local c2 = LocalPlayer.Character
-			local r2 = c2 and c2:FindFirstChild("HumanoidRootPart")
-			if not c2 or not r2 then return false end
-			local sideCF = CFrame.new(dodgePos.X, r2.Position.Y, dodgePos.Z) * rotationCF
-			local sideOk = tweenSingleSegment(sideCF, myToken, nil)
-			if not sideOk then
-				return false
-			end
-		else
-			return false
-		end
+		local goalCF = CFrame.new(r.Position.X, targetY, r.Position.Z) * rotationCF
+		if not moveSmoothlyWithDodge(goalCF, startBaseY, true, myToken) then return false end
 	end
-
 	return false
 end
 
 local function tweenViaSkyToTarget(targetCFrame, onComplete)
 	if isUnloaded then return end
 	local char = LocalPlayer.Character
-	if not isAliveChar(char) then return end
-	local hrp = char:FindFirstChild("HumanoidRootPart")
-	if not hrp then return end
+	local hrp = getHrp(char)
+	if not isAliveChar(char) or not hrp then return end
 
 	cancelActiveTween()
 	stopFreeze()
@@ -508,58 +463,46 @@ local function tweenViaSkyToTarget(targetCFrame, onComplete)
 	activeTweenSequence = true
 
 	task.spawn(function()
-		if isUnloaded then return end
-		local c = LocalPlayer.Character
-		local r = c and c:FindFirstChild("HumanoidRootPart")
-		if not c or not r or tweenToken ~= myToken then
-			if tweenToken == myToken then
-				activeTweenSequence = false
+		local function abortIfDone()
+			if isUnloaded or tweenToken ~= myToken then
+				if tweenToken == myToken then activeTweenSequence = false end
+				return true
 			end
-			return
+			return false
 		end
 
-		local startPos = r.Position
-		local climbTargetY = startPos.Y + SKY_CLIMB_STUDS
-
-		if not climbStraightToHeight(climbTargetY, targetCFrame.Rotation, startPos.Y, myToken) then
-			if tweenToken == myToken then
-				activeTweenSequence = false
-			end
+		local startPos = hrp.Position
+		if not climbStraightToHeight(startPos.Y + SKY_CLIMB_STUDS, targetCFrame.Rotation, startPos.Y, myToken) then
+			if tweenToken == myToken then activeTweenSequence = false end
 			return
 		end
+		if abortIfDone() then return end
 
-		local afterClimbPos = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character.HumanoidRootPart.Position or startPos
-		local aboveTargetCF = CFrame.new(targetCFrame.Position.X, afterClimbPos.Y, targetCFrame.Position.Z) * targetCFrame.Rotation
-		local ok2 = tweenSingleSegment(aboveTargetCF, myToken, nil)
-		if not ok2 then
-			if tweenToken == myToken then
-				activeTweenSequence = false
-			end
+		local curRoot = getHrp(LocalPlayer.Character)
+		local climbY = curRoot and curRoot.Position.Y or (startPos.Y + SKY_CLIMB_STUDS)
+		local aboveTargetCF = CFrame.new(targetCFrame.Position.X, climbY, targetCFrame.Position.Z) * targetCFrame.Rotation
+		if not moveSmoothlyWithDodge(aboveTargetCF, startPos.Y, false, myToken) then
+			if tweenToken == myToken then activeTweenSequence = false end
 			return
 		end
+		if abortIfDone() then return end
 
 		setNoclip(true)
-
-		local ok3 = tweenSingleSegment(targetCFrame, myToken, nil)
+		local ok3 = tweenSingleSegment(targetCFrame, myToken, nil, TWEEN_SPEED)
 		if not ok3 then
 			setNoclip(false)
-			if tweenToken == myToken then
-				activeTweenSequence = false
-			end
+			if tweenToken == myToken then activeTweenSequence = false end
 			return
 		end
+		if abortIfDone() then return end
 
-		if not isUnloaded and tweenToken == myToken then
-			activeTweenSequence = false
-			local finalChar = LocalPlayer.Character
-			local finalRoot = finalChar and finalChar:FindFirstChild("HumanoidRootPart")
-			if finalChar and finalRoot then
-				zeroCharacterVelocity(finalChar)
-				finalRoot.CFrame = targetCFrame
-				if onComplete then
-					onComplete(finalChar, finalRoot, targetCFrame)
-				end
-			end
+		activeTweenSequence = false
+		local finalChar = LocalPlayer.Character
+		local finalRoot = getHrp(finalChar)
+		if finalChar and finalRoot then
+			zeroCharacterVelocity(finalChar)
+			finalRoot.CFrame = targetCFrame
+			if onComplete then onComplete(finalChar, finalRoot, targetCFrame) end
 		end
 	end)
 end
@@ -579,42 +522,29 @@ end
 local function goUpToPlatform()
 	if isUnloaded then return end
 	local char = LocalPlayer.Character
-	if not isAliveChar(char) then return end
-	local hrp = char:FindFirstChild("HumanoidRootPart")
+	local hrp = getHrp(char)
+	if not isAliveChar(char) or not hrp then return end
 
-	if not savedOriginCFrame then
-		savedOriginCFrame = hrp.CFrame
-	end
+	if not savedOriginCFrame then savedOriginCFrame = hrp.CFrame end
+	setNoclip(true)
 
-	local targetCF = getTargetStandCFrame()
-
-	if role == "owner" then
-		setNoclip(true)
-		tweenViaSkyToTarget(targetCF, function(finalChar, root)
-			zeroCharacterVelocity(finalChar)
-			setNoclip(false)
-		end)
-	else
-		setNoclip(true)
-		tweenViaSkyToTarget(targetCF, function(finalChar, root, landedCF)
-			startFreezeAtCurrentSpot(root, landedCF)
-			zeroCharacterVelocity(finalChar)
-			setNoclip(false)
-		end)
-	end
+	tweenViaSkyToTarget(getTargetStandCFrame(), function(finalChar, root, landedCF)
+		if role == "alt" then startFreezeAtCurrentSpot(root, landedCF) end
+		zeroCharacterVelocity(finalChar)
+		setNoclip(false)
+	end)
 end
 
 local function goBackToOrigin()
 	if isUnloaded then return end
 	local char = LocalPlayer.Character
-	if not isAliveChar(char) then return end
-	local hrp = char:FindFirstChild("HumanoidRootPart")
+	local hrp = getHrp(char)
+	if not isAliveChar(char) or not hrp then return end
 
 	stopFreeze()
 	setNoclip(true)
 
-	local backCF = savedOriginCFrame or hrp.CFrame
-	tweenViaSkyToTarget(backCF, function(finalChar, root)
+	tweenViaSkyToTarget(savedOriginCFrame or hrp.CFrame, function(finalChar)
 		zeroCharacterVelocity(finalChar)
 		setNoclip(false)
 		savedOriginCFrame = nil
@@ -655,9 +585,7 @@ local function forceResetCharacter(char)
 			hum:ChangeState(Enum.HumanoidStateType.Dead)
 		end
 	end)
-	pcall(function()
-		char:BreakJoints()
-	end)
+	pcall(function() char:BreakJoints() end)
 end
 
 local function triggerAutoReset97Flow(char)
@@ -667,15 +595,10 @@ local function triggerAutoReset97Flow(char)
 	task.spawn(function()
 		forceResetCharacter(char)
 
-		-- Đợi 7s rồi ấn R
 		task.wait(7)
-		if isUnloaded or not isAutoReset97 then
-			autoResetBusy = false
-			return
-		end
+		if isUnloaded or not isAutoReset97 then autoResetBusy = false; return end
 		pressKeyR()
 
-		-- Đợi 2s rồi tween lên platform set lại
 		task.wait(2)
 		autoResetBusy = false
 		if not isUnloaded and isAutoReset97 then
@@ -686,10 +609,7 @@ local function triggerAutoReset97Flow(char)
 end
 
 local function attachHp97Watcher(char)
-	if hpWatchConn then
-		hpWatchConn:Disconnect()
-		hpWatchConn = nil
-	end
+	if hpWatchConn then hpWatchConn:Disconnect(); hpWatchConn = nil end
 	if isUnloaded or role ~= "alt" or not char then return end
 
 	local hum = char:WaitForChild("Humanoid", 10)
@@ -731,9 +651,7 @@ local function hookCharacter(char)
 	end
 end
 
-if LocalPlayer.Character then
-	hookCharacter(LocalPlayer.Character)
-end
+if LocalPlayer.Character then hookCharacter(LocalPlayer.Character) end
 
 trackConn(LocalPlayer.CharacterAdded:Connect(function(newChar)
 	if isUnloaded then return end
@@ -752,7 +670,7 @@ trackConn(LocalPlayer.CharacterAdded:Connect(function(newChar)
 			task.wait(0.25)
 			if isUnloaded then return end
 			setNoclip(true)
-			tweenViaSkyToTarget(savedOriginCFrame, function(finalChar, root)
+			tweenViaSkyToTarget(savedOriginCFrame, function(finalChar)
 				zeroCharacterVelocity(finalChar)
 				setNoclip(false)
 				savedOriginCFrame = nil
@@ -776,65 +694,52 @@ local function unloadScript()
 	stopFreeze()
 	setNoclip(false)
 
-	if hpWatchConn then
-		hpWatchConn:Disconnect()
-		hpWatchConn = nil
-	end
-
-	for _, conn in ipairs(connections) do
-		pcall(function()
-			conn:Disconnect()
-		end)
-	end
+	if hpWatchConn then hpWatchConn:Disconnect(); hpWatchConn = nil end
+	for _, conn in ipairs(connections) do pcall(function() conn:Disconnect() end) end
 	table.clear(connections)
 
-	if skyPlatform and skyPlatform.Parent then
-		pcall(function()
-			skyPlatform:Destroy()
-		end)
-	end
+	if skyPlatform and skyPlatform.Parent then pcall(function() skyPlatform:Destroy() end) end
 	skyPlatform = nil
 
 	local existingPlat = workspace:FindFirstChild(PLATFORM_NAME)
-	if existingPlat then
-		pcall(function()
-			existingPlat:Destroy()
-		end)
-	end
+	if existingPlat then pcall(function() existingPlat:Destroy() end) end
 
-	if activeGui and activeGui.Parent then
-		pcall(function()
-			activeGui:Destroy()
-		end)
-	end
+	if activeGui and activeGui.Parent then pcall(function() activeGui:Destroy() end) end
 	activeGui = nil
 
 	local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-	if playerGui then
-		local existingGui = playerGui:FindFirstChild("SkyPlatformControlGui")
-		if existingGui then
-			pcall(function()
-				existingGui:Destroy()
-			end)
-		end
-	end
+	local existingGui = playerGui and playerGui:FindFirstChild("SkyPlatformControlGui")
+	if existingGui then pcall(function() existingGui:Destroy() end) end
 
-	customSetPoint = nil
-	savedOriginCFrame = nil
-	refreshActionButtonText = nil
-	setPlatformFeedback = nil
+	customSetPoint, savedOriginCFrame, refreshActionButtonText, setPlatformFeedback = nil, nil, nil, nil
 end
 
 -- ==========================================
 -- TẠO GUI
 -- ==========================================
+local function createButton(parent, name, size, pos, bgColor, text, font, textSize)
+	local btn = Instance.new("TextButton")
+	btn.Name = name
+	btn.Size = size
+	btn.Position = pos
+	btn.BackgroundColor3 = bgColor
+	btn.Text = text
+	btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	btn.Font = font or Enum.Font.GothamBold
+	btn.TextSize = textSize or 12
+	btn.Parent = parent
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 6)
+	corner.Parent = btn
+	return btn
+end
+
 local function buildGui()
 	if isUnloaded then return end
 	local playerGui = LocalPlayer:WaitForChild("PlayerGui")
 	local existing = playerGui:FindFirstChild("SkyPlatformControlGui")
-	if existing then
-		existing:Destroy()
-	end
+	if existing then existing:Destroy() end
 
 	local screenGui = Instance.new("ScreenGui")
 	screenGui.Name = "SkyPlatformControlGui"
@@ -852,9 +757,9 @@ local function buildGui()
 	frame.Draggable = true
 	frame.Parent = screenGui
 
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 8)
-	corner.Parent = frame
+	local frameCorner = Instance.new("UICorner")
+	frameCorner.CornerRadius = UDim.new(0, 8)
+	frameCorner.Parent = frame
 
 	local title = Instance.new("TextLabel")
 	title.Size = UDim2.new(1, -16, 0, 22)
@@ -867,100 +772,48 @@ local function buildGui()
 	title.TextXAlignment = Enum.TextXAlignment.Left
 	title.Parent = frame
 
-	local actionBtn = Instance.new("TextButton")
-	actionBtn.Name = "ActionButton"
-	actionBtn.Size = UDim2.new(1, -16, 0, 34)
-	actionBtn.Position = UDim2.fromOffset(8, 32)
-	actionBtn.BackgroundColor3 = Color3.fromRGB(50, 54, 65)
-	actionBtn.Text = "TẮT"
-	actionBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-	actionBtn.Font = Enum.Font.GothamBold
-	actionBtn.TextSize = 14
-	actionBtn.Parent = frame
-
-	local btnCorner = Instance.new("UICorner")
-	btnCorner.CornerRadius = UDim.new(0, 6)
-	btnCorner.Parent = actionBtn
+	local actionBtn = createButton(frame, "ActionButton", UDim2.new(1, -16, 0, 34), UDim2.fromOffset(8, 32), Color3.fromRGB(50, 54, 65), "TẮT", Enum.Font.GothamBold, 14)
 
 	refreshActionButtonText = function()
 		if isUnloaded then return end
 		if isButtonMode then
 			actionBtn.Text = "LÊN PLATFORM (BẤM)"
 			actionBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 210)
+		elseif isActive then
+			actionBtn.Text = "BẬT"
+			actionBtn.BackgroundColor3 = Color3.fromRGB(45, 170, 95)
 		else
-			if isActive then
-				actionBtn.Text = "BẬT"
-				actionBtn.BackgroundColor3 = Color3.fromRGB(45, 170, 95)
-			else
-				actionBtn.Text = "TẮT"
-				actionBtn.BackgroundColor3 = Color3.fromRGB(170, 55, 55)
-			end
+			actionBtn.Text = "TẮT"
+			actionBtn.BackgroundColor3 = Color3.fromRGB(170, 55, 55)
 		end
 	end
 
 	actionBtn.MouseButton1Click:Connect(function()
 		if isUnloaded then return end
+		respawnTweenPending = false
 		if isButtonMode then
 			goUpToPlatform()
 		else
 			isActive = not isActive
 			refreshActionButtonText()
-			if isActive then
-				respawnTweenPending = false
-				goUpToPlatform()
-			else
-				respawnTweenPending = false
-				goBackToOrigin()
-			end
+			if isActive then goUpToPlatform() else goBackToOrigin() end
 		end
 	end)
 
-	local checkBtn = Instance.new("TextButton")
-	checkBtn.Name = "ModeCheckButton"
-	checkBtn.Size = UDim2.new(1, -16, 0, 28)
-	checkBtn.Position = UDim2.fromOffset(8, 74)
-	checkBtn.BackgroundColor3 = Color3.fromRGB(40, 43, 52)
-	checkBtn.Text = "[ ] Chế độ Nút bấm"
-	checkBtn.TextColor3 = Color3.fromRGB(225, 225, 225)
-	checkBtn.Font = Enum.Font.GothamSemibold
-	checkBtn.TextSize = 12
-	checkBtn.Parent = frame
-
-	local checkCorner = Instance.new("UICorner")
-	checkCorner.CornerRadius = UDim.new(0, 6)
-	checkCorner.Parent = checkBtn
-
+	local checkBtn = createButton(frame, "ModeCheckButton", UDim2.new(1, -16, 0, 28), UDim2.fromOffset(8, 74), Color3.fromRGB(40, 43, 52), "[ ] Chế độ Nút bấm", Enum.Font.GothamSemibold, 12)
 	checkBtn.MouseButton1Click:Connect(function()
 		if isUnloaded then return end
 		isButtonMode = not isButtonMode
-		if isButtonMode then
-			respawnTweenPending = false
-			checkBtn.Text = "[✓] Chế độ Nút bấm"
-			checkBtn.BackgroundColor3 = Color3.fromRGB(60, 95, 140)
-		else
-			checkBtn.Text = "[ ] Chế độ Nút bấm"
-			checkBtn.BackgroundColor3 = Color3.fromRGB(40, 43, 52)
-		end
+		if isButtonMode then respawnTweenPending = false end
+		checkBtn.Text = isButtonMode and "[✓] Chế độ Nút bấm" or "[ ] Chế độ Nút bấm"
+		checkBtn.BackgroundColor3 = isButtonMode and Color3.fromRGB(60, 95, 140) or Color3.fromRGB(40, 43, 52)
 		refreshActionButtonText()
 	end)
 
 	if role == "owner" then
-		local setPlatBtn = Instance.new("TextButton")
-		setPlatBtn.Name = "SetPlatformButton"
-		setPlatBtn.Size = UDim2.new(1, -16, 0, 28)
-		setPlatBtn.Position = UDim2.fromOffset(8, 108)
-		setPlatBtn.BackgroundColor3 = Color3.fromRGB(85, 65, 145)
-		setPlatBtn.Text = "SET PLATFORM"
-		setPlatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-		setPlatBtn.Font = Enum.Font.GothamBold
-		setPlatBtn.TextSize = 11
-		setPlatBtn.Parent = frame
-
-		local setCorner = Instance.new("UICorner")
-		setCorner.CornerRadius = UDim.new(0, 6)
-		setCorner.Parent = setPlatBtn
-
+		local setPlatBtn = createButton(frame, "SetPlatformButton", UDim2.new(1, -16, 0, 28), UDim2.fromOffset(8, 108), Color3.fromRGB(85, 65, 145), "SET PLATFORM", Enum.Font.GothamBold, 11)
 		local feedbackToken = 0
+
 		setPlatformFeedback = function(vec3)
 			if isUnloaded then return end
 			feedbackToken += 1
@@ -975,25 +828,9 @@ local function buildGui()
 			end)
 		end
 
-		setPlatBtn.MouseButton1Click:Connect(function()
-			setPointOnly()
-		end)
+		setPlatBtn.MouseButton1Click:Connect(setPointOnly)
 	else
-		local reset97Btn = Instance.new("TextButton")
-		reset97Btn.Name = "AutoReset97Button"
-		reset97Btn.Size = UDim2.new(1, -16, 0, 28)
-		reset97Btn.Position = UDim2.fromOffset(8, 108)
-		reset97Btn.BackgroundColor3 = Color3.fromRGB(40, 43, 52)
-		reset97Btn.Text = "[ ] Reset HP<=97 (7s->R->2s)"
-		reset97Btn.TextColor3 = Color3.fromRGB(225, 225, 225)
-		reset97Btn.Font = Enum.Font.GothamSemibold
-		reset97Btn.TextSize = 11
-		reset97Btn.Parent = frame
-
-		local resetCorner = Instance.new("UICorner")
-		resetCorner.CornerRadius = UDim.new(0, 6)
-		resetCorner.Parent = reset97Btn
-
+		local reset97Btn = createButton(frame, "AutoReset97Button", UDim2.new(1, -16, 0, 28), UDim2.fromOffset(8, 108), Color3.fromRGB(40, 43, 52), "[ ] Reset HP<=97 (7s->R->2s)", Enum.Font.GothamSemibold, 11)
 		reset97Btn.MouseButton1Click:Connect(function()
 			if isUnloaded then return end
 			isAutoReset97 = not isAutoReset97
@@ -1001,9 +838,7 @@ local function buildGui()
 				respawnTweenPending = false
 				reset97Btn.Text = "[✓] Reset HP<=97 (7s->R->2s)"
 				reset97Btn.BackgroundColor3 = Color3.fromRGB(145, 85, 40)
-				if LocalPlayer.Character then
-					attachHp97Watcher(LocalPlayer.Character)
-				end
+				if LocalPlayer.Character then attachHp97Watcher(LocalPlayer.Character) end
 			else
 				autoResetBusy = false
 				reset97Btn.Text = "[ ] Reset HP<=97 (7s->R->2s)"
@@ -1012,24 +847,9 @@ local function buildGui()
 		end)
 	end
 
-	local unloadBtn = Instance.new("TextButton")
-	unloadBtn.Name = "UnloadButton"
-	unloadBtn.Size = UDim2.new(1, -16, 0, 26)
-	unloadBtn.Position = UDim2.fromOffset(8, 144)
-	unloadBtn.BackgroundColor3 = Color3.fromRGB(120, 35, 45)
-	unloadBtn.Text = "UNLOAD"
+	local unloadBtn = createButton(frame, "UnloadButton", UDim2.new(1, -16, 0, 26), UDim2.fromOffset(8, 144), Color3.fromRGB(120, 35, 45), "UNLOAD", Enum.Font.GothamBold, 11)
 	unloadBtn.TextColor3 = Color3.fromRGB(255, 230, 230)
-	unloadBtn.Font = Enum.Font.GothamBold
-	unloadBtn.TextSize = 11
-	unloadBtn.Parent = frame
-
-	local unloadCorner = Instance.new("UICorner")
-	unloadCorner.CornerRadius = UDim.new(0, 6)
-	unloadCorner.Parent = unloadBtn
-
-	unloadBtn.MouseButton1Click:Connect(function()
-		unloadScript()
-	end)
+	unloadBtn.MouseButton1Click:Connect(unloadScript)
 
 	refreshActionButtonText()
 end

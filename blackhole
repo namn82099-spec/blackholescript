@@ -1,17 +1,12 @@
 -- ==========================================
--- CẤU HÌNH CHỦ NHÂN & 1 PLATFORM DUY NHẤT
+-- CẤU HÌNH CHỦ NHÂN & PLATFORM
 -- ==========================================
 local OwnerName = "tinhtrungcovij" -- Thay tên tài khoản chính vào đây
 
--- ĐỂ CHUNG 1 TỌA ĐỘ NÀY TRÊN CẢ 2 MÁY
 local FIXED_PLATFORM_POS = Vector3.new(0, 1000, 0)
-local PLATFORM_SIZE = Vector3.new(20, 2, 20)
+local PLATFORM_SIZE = Vector3.new(50, 2, 50)
 local PLATFORM_NAME = "SharedSkyPlatform_Client"
-local TWEEN_SPEED = 300 -- studs / giây
-
--- Tốc độ trừ máu từ từ về 1 cho máy alt
-local HP_DRAIN_STEP = 1
-local HP_DRAIN_INTERVAL = 0.01 -- ~mỗi 10ms trừ 1 máu
+local TWEEN_SPEED = 100 -- studs / giây
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -22,39 +17,33 @@ local LocalPlayer = Players.LocalPlayer
 
 -- Kiểm tra username trong game có đúng bằng OwnerName hay không
 local role = (LocalPlayer.Name == OwnerName) and "owner" or "alt"
-local isMain = (role == "owner")
 
 -- Trạng thái
 local isActive = false
-local isButtonMode = false
+local isButtonMode = false -- Áp dụng cho cả owner và alt
 local activeTween = nil
 local noclipConn = nil
-local hpDrainTask = nil
+local freezeConn = nil
+local frozenCFrame = nil
 local altResetTriggered = false
+local respawnTweenPending = false
 
 local savedOriginCFrame = nil
-local savedWalkSpeed = 16
-local savedJumpPower = 50
-local savedUseJumpPower = true
+local refreshActionButtonText = nil
 
-local function charValid(hum, hrp)
-	return hum and hrp and hum.Parent and hrp.Parent and hum.Health > 0
-end
-
-local function stopHpDrain()
-	if hpDrainTask then
-		task.cancel(hpDrainTask)
-		hpDrainTask = nil
-	end
+local function isAliveChar(char)
+	if not char then return false end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	return hum ~= nil and hrp ~= nil and hum.Parent ~= nil and hrp.Parent ~= nil and hum:GetState() ~= Enum.HumanoidStateType.Dead
 end
 
 -- ==========================================
--- DUY TRÌ DUY NHẤT 1 PLATFORM TẠI FIXED_PLATFORM_POS
+-- DUY TRÌ DUY NHẤT 1 PLATFORM 50x50
 -- ==========================================
 local skyPlatform = nil
 
 local function ensureSinglePlatform()
-	-- Xóa mọi platform trùng tên cũ để tránh tạo chồng / lệch chỗ
 	for _, obj in ipairs(workspace:GetChildren()) do
 		if obj:IsA("BasePart") and obj.Name == PLATFORM_NAME and obj ~= skyPlatform then
 			obj:Destroy()
@@ -76,7 +65,7 @@ local function ensureSinglePlatform()
 	part.Anchored = true
 	part.CanCollide = true
 	part.Material = Enum.Material.SmoothPlastic
-	part.Color = isMain and Color3.fromRGB(0, 170, 255) or Color3.fromRGB(255, 170, 0)
+	part.Color = (role == "owner") and Color3.fromRGB(0, 170, 255) or Color3.fromRGB(255, 170, 0)
 	part.TopSurface = Enum.SurfaceType.Smooth
 	part.BottomSurface = Enum.SurfaceType.Smooth
 	part.Parent = workspace
@@ -87,68 +76,8 @@ end
 
 ensureSinglePlatform()
 
-LocalPlayer.CharacterAdded:Connect(function()
-	altResetTriggered = false
-	stopHpDrain()
-	ensureSinglePlatform()
-end)
-
 -- ==========================================
--- TRỪ MÁU TỪ TỪ VỀ 1 (CHỈ MÁY ALT)
--- ==========================================
-local function startDrainingHealthToOne(hum)
-	stopHpDrain()
-	if not hum or hum.Parent == nil then return end
-	if hum.Health <= 1 then
-		if hum.Health > 0 then
-			hum.Health = 1
-		end
-		return
-	end
-
-	hpDrainTask = task.spawn(function()
-		while hum and hum.Parent and hum.Health > 1 do
-			local nextHp = hum.Health - HP_DRAIN_STEP
-			if nextHp <= 1 then
-				hum.Health = 1
-				break
-			else
-				hum.Health = nextHp
-			end
-			task.wait(HP_DRAIN_INTERVAL)
-		end
-		hpDrainTask = nil
-	end)
-end
-
--- ==========================================
--- FORCE RESET KHI ẤN R (CHỈ MÁY ALT, 1 LẦN / LẦN SPAWN)
--- ==========================================
-local function forceResetAltCharacter()
-	if isMain or altResetTriggered then return end
-	local char = LocalPlayer.Character
-	if not char then return end
-
-	altResetTriggered = true
-	stopHpDrain()
-
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if hum then
-		hum.Health = 0
-		hum:ChangeState(Enum.HumanoidStateType.Dead)
-	end
-	char:BreakJoints()
-end
-
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then return end
-	if role == "alt" and input.KeyCode == Enum.KeyCode.R then
-		forceResetAltCharacter()
-	end
-end)
-
--- ==========================================
--- NOCLIP & FREEZE
+-- NOCLIP & FREEZE TẠI CHỖ (KHÔNG SỬA SPEED/JUMP)
 -- ==========================================
 local function setNoclip(enabled)
 	if noclipConn then
@@ -177,46 +106,64 @@ local function setNoclip(enabled)
 	end
 end
 
-local function setFrozen(frozen, hum, hrp)
-	if not charValid(hum, hrp) then return end
-	if frozen then
-		savedWalkSpeed = hum.WalkSpeed
-		savedJumpPower = hum.JumpPower
-		savedUseJumpPower = hum.UseJumpPower
+local function stopFreeze()
+	if freezeConn then
+		freezeConn:Disconnect()
+		freezeConn = nil
+	end
+	frozenCFrame = nil
 
-		hum.WalkSpeed = 0
-		hum.UseJumpPower = true
-		hum.JumpPower = 0
-		hrp.AssemblyLinearVelocity = Vector3.zero
-		hrp.AssemblyAngularVelocity = Vector3.zero
-		hrp.Anchored = true
-	else
+	local char = LocalPlayer.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if hrp and hrp:IsA("BasePart") then
 		hrp.Anchored = false
-		hum.WalkSpeed = savedWalkSpeed > 0 and savedWalkSpeed or 16
-		hum.UseJumpPower = savedUseJumpPower
-		hum.JumpPower = savedJumpPower > 0 and savedJumpPower or 50
 	end
 end
 
+local function startFreezeAtCurrentSpot(hrp)
+	stopFreeze()
+	if not hrp or not hrp.Parent then return end
+
+	frozenCFrame = hrp.CFrame
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	hrp.AssemblyAngularVelocity = Vector3.zero
+	hrp.Anchored = true
+
+	freezeConn = RunService.Heartbeat:Connect(function()
+		local char = LocalPlayer.Character
+		local root = char and char:FindFirstChild("HumanoidRootPart")
+		if not root or not root.Parent or not frozenCFrame then
+			stopFreeze()
+			return
+		end
+		root.AssemblyLinearVelocity = Vector3.zero
+		root.AssemblyAngularVelocity = Vector3.zero
+		if not root.Anchored then
+			root.Anchored = true
+		end
+		if (root.Position - frozenCFrame.Position).Magnitude > 0.05 then
+			root.CFrame = frozenCFrame
+		end
+	end)
+end
+
 -- ==========================================
--- TWEEN DI CHUYỂN THEO TỐC ĐỘ (STUD/S)
+-- TWEEN THEO TỐC ĐỘ 100 STUD/S
 -- ==========================================
 local function tweenToCFrame(targetCFrame, onComplete)
 	local char = LocalPlayer.Character
-	if not char then return end
+	if not isAliveChar(char) then return end
 	local hrp = char:FindFirstChild("HumanoidRootPart")
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not charValid(hum, hrp) then return end
 
 	if activeTween then
 		activeTween:Cancel()
 		activeTween = nil
 	end
 
+	stopFreeze()
+
 	local distance = (hrp.Position - targetCFrame.Position).Magnitude
 	local duration = math.max(distance / TWEEN_SPEED, 0.05)
-
-	hrp.Anchored = false
 
 	local info = TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
 	local tween = TweenService:Create(hrp, info, { CFrame = targetCFrame })
@@ -227,7 +174,11 @@ local function tweenToCFrame(targetCFrame, onComplete)
 			activeTween = nil
 		end
 		if playbackState == Enum.PlaybackState.Completed and onComplete then
-			onComplete(hum, hrp)
+			local currentChar = LocalPlayer.Character
+			local currentRoot = currentChar and currentChar:FindFirstChild("HumanoidRootPart")
+			if currentChar and currentRoot then
+				onComplete(currentChar, currentRoot)
+			end
 		end
 	end)
 
@@ -241,66 +192,140 @@ local function getPlatformStandCFrame()
 end
 
 -- ==========================================
--- HÀNH ĐỘNG LÊN PLATFORM / VỀ VỊ TRÍ CŨ
+-- HÀNH ĐỘNG LÊN PLATFORM / TWEEN VỀ VỊ TRÍ CŨ
 -- ==========================================
 local function goUpToPlatform()
 	local char = LocalPlayer.Character
-	if not char then return end
+	if not isAliveChar(char) then return end
 	local hrp = char:FindFirstChild("HumanoidRootPart")
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not charValid(hum, hrp) then return end
 
 	if not savedOriginCFrame then
 		savedOriginCFrame = hrp.CFrame
 	end
 
-	stopHpDrain()
-	setFrozen(false, hum, hrp)
 	local targetCF = getPlatformStandCFrame()
 
 	if role == "owner" then
+		-- Máy owner: noclip khi tween lên, xong thì noclip off để đứng trên platform
 		setNoclip(true)
-		tweenToCFrame(targetCF, function(h, r)
+		tweenToCFrame(targetCF, function(_, root)
 			setNoclip(false)
-			if charValid(h, r) then
-				r.AssemblyLinearVelocity = Vector3.zero
-			end
+			root.AssemblyLinearVelocity = Vector3.zero
 		end)
 	else
+		-- Máy alt: tween lên với noclip off, đến nơi noclip off và freeze tại chỗ
 		setNoclip(false)
-		tweenToCFrame(targetCF, function(h, r)
+		tweenToCFrame(targetCF, function(_, root)
 			setNoclip(false)
-			if charValid(h, r) then
-				setFrozen(true, h, r)
-				startDrainingHealthToOne(h)
-			end
+			startFreezeAtCurrentSpot(root)
 		end)
 	end
 end
 
 local function goBackToOrigin()
 	local char = LocalPlayer.Character
-	if not char then return end
+	if not isAliveChar(char) then return end
 	local hrp = char:FindFirstChild("HumanoidRootPart")
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not charValid(hum, hrp) then return end
 
-	stopHpDrain()
-	setFrozen(false, hum, hrp)
+	stopFreeze()
 	setNoclip(true)
 
 	local backCF = savedOriginCFrame or hrp.CFrame
-	tweenToCFrame(backCF, function(h, r)
+	tweenToCFrame(backCF, function(_, root)
 		setNoclip(false)
 		savedOriginCFrame = nil
-		if charValid(h, r) then
-			r.AssemblyLinearVelocity = Vector3.zero
-		end
+		root.AssemblyLinearVelocity = Vector3.zero
 	end)
 end
 
 -- ==========================================
--- TẠO GUI
+-- RESET KIỂU NAMELESS ADMIN (CHỈ MÁY ALT, 1 LẦN / LẦN SPAWN)
+-- ==========================================
+local function namelessStyleResetAlt()
+	if role ~= "alt" or altResetTriggered then return end
+	local char = LocalPlayer.Character
+	if not char then return end
+
+	altResetTriggered = true
+	stopFreeze()
+	setNoclip(false)
+
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.Sit = false
+		pcall(function()
+			hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+			hum:ChangeState(Enum.HumanoidStateType.Dead)
+		end)
+		hum.Health = 0
+	end
+
+	task.delay(0.05, function()
+		if char and char.Parent then
+			pcall(function()
+				char:BreakJoints()
+			end)
+		end
+	end)
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if role == "alt" and input.KeyCode == Enum.KeyCode.R then
+		namelessStyleResetAlt()
+	end
+end)
+
+-- ==========================================
+-- THEO DÕI CHẾT & RESPAWN (TỰ TWEEN VỀ KHI CHẾT TRÊN ALT TOGGLE)
+-- ==========================================
+local function hookCharacter(char)
+	altResetTriggered = false
+	stopFreeze()
+
+	local hum = char:WaitForChild("Humanoid", 10)
+	if hum then
+		hum.Died:Connect(function()
+			if activeTween then
+				activeTween:Cancel()
+				activeTween = nil
+			end
+			stopFreeze()
+			setNoclip(false)
+
+			-- Nếu máy alt đang bật ở chế độ toggle (không phải nút bấm), đánh dấu để tự tween về khi có nhân vật mới
+			if role == "alt" and (not isButtonMode) and isActive and savedOriginCFrame then
+				respawnTweenPending = true
+			end
+		end)
+	end
+end
+
+if LocalPlayer.Character then
+	hookCharacter(LocalPlayer.Character)
+end
+
+LocalPlayer.CharacterAdded:Connect(function(newChar)
+	ensureSinglePlatform()
+	hookCharacter(newChar)
+
+	if role == "alt" and (not isButtonMode) and isActive and respawnTweenPending and savedOriginCFrame then
+		respawnTweenPending = false
+		local hrp = newChar:WaitForChild("HumanoidRootPart", 10)
+		if hrp then
+			task.wait(0.25)
+			setNoclip(true)
+			tweenToCFrame(savedOriginCFrame, function(_, root)
+				setNoclip(false)
+				savedOriginCFrame = nil
+				root.AssemblyLinearVelocity = Vector3.zero
+			end)
+		end
+	end
+end)
+
+-- ==========================================
+-- TẠO GUI (CẢ OWNER VÀ ALT ĐỀU CÓ NÚT CHECK NÚT BẤM)
 -- ==========================================
 local function buildGui()
 	local playerGui = LocalPlayer:WaitForChild("PlayerGui")
@@ -316,7 +341,7 @@ local function buildGui()
 
 	local frame = Instance.new("Frame")
 	frame.Name = "MainFrame"
-	frame.Size = UDim2.fromOffset(220, isMain and 112 or 76)
+	frame.Size = UDim2.fromOffset(220, 112)
 	frame.Position = UDim2.new(0.5, -110, 0.2, 0)
 	frame.BackgroundColor3 = Color3.fromRGB(28, 30, 36)
 	frame.BorderSizePixel = 0
@@ -333,7 +358,7 @@ local function buildGui()
 	title.Position = UDim2.fromOffset(8, 6)
 	title.BackgroundTransparency = 1
 	title.Text = (role == "owner") and "panel owner" or "panel alt"
-	title.TextColor3 = isMain and Color3.fromRGB(100, 210, 255) or Color3.fromRGB(255, 190, 80)
+	title.TextColor3 = (role == "owner") and Color3.fromRGB(100, 210, 255) or Color3.fromRGB(255, 190, 80)
 	title.Font = Enum.Font.GothamBold
 	title.TextSize = 13
 	title.TextXAlignment = Enum.TextXAlignment.Left
@@ -354,8 +379,8 @@ local function buildGui()
 	btnCorner.CornerRadius = UDim.new(0, 6)
 	btnCorner.Parent = actionBtn
 
-	local function refreshActionButtonText()
-		if isMain and isButtonMode then
+	refreshActionButtonText = function()
+		if isButtonMode then
 			actionBtn.Text = "LÊN PLATFORM (BẤM)"
 			actionBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 210)
 		else
@@ -370,47 +395,48 @@ local function buildGui()
 	end
 
 	actionBtn.MouseButton1Click:Connect(function()
-		if isMain and isButtonMode then
+		if isButtonMode then
 			goUpToPlatform()
 		else
 			isActive = not isActive
 			refreshActionButtonText()
 			if isActive then
+				respawnTweenPending = false
 				goUpToPlatform()
 			else
+				respawnTweenPending = false
 				goBackToOrigin()
 			end
 		end
 	end)
 
-	if isMain then
-		local checkBtn = Instance.new("TextButton")
-		checkBtn.Name = "ModeCheckButton"
-		checkBtn.Size = UDim2.new(1, -16, 0, 28)
-		checkBtn.Position = UDim2.fromOffset(8, 74)
-		checkBtn.BackgroundColor3 = Color3.fromRGB(40, 43, 52)
-		checkBtn.Text = "[ ] Chế độ Nút bấm"
-		checkBtn.TextColor3 = Color3.fromRGB(225, 225, 225)
-		checkBtn.Font = Enum.Font.GothamSemibold
-		checkBtn.TextSize = 12
-		checkBtn.Parent = frame
+	local checkBtn = Instance.new("TextButton")
+	checkBtn.Name = "ModeCheckButton"
+	checkBtn.Size = UDim2.new(1, -16, 0, 28)
+	checkBtn.Position = UDim2.fromOffset(8, 74)
+	checkBtn.BackgroundColor3 = Color3.fromRGB(40, 43, 52)
+	checkBtn.Text = "[ ] Chế độ Nút bấm"
+	checkBtn.TextColor3 = Color3.fromRGB(225, 225, 225)
+	checkBtn.Font = Enum.Font.GothamSemibold
+	checkBtn.TextSize = 12
+	checkBtn.Parent = frame
 
-		local checkCorner = Instance.new("UICorner")
-		checkCorner.CornerRadius = UDim.new(0, 6)
-		checkCorner.Parent = checkBtn
+	local checkCorner = Instance.new("UICorner")
+	checkCorner.CornerRadius = UDim.new(0, 6)
+	checkCorner.Parent = checkBtn
 
-		checkBtn.MouseButton1Click:Connect(function()
-			isButtonMode = not isButtonMode
-			if isButtonMode then
-				checkBtn.Text = "[✓] Chế độ Nút bấm"
-				checkBtn.BackgroundColor3 = Color3.fromRGB(60, 95, 140)
-			else
-				checkBtn.Text = "[ ] Chế độ Nút bấm"
-				checkBtn.BackgroundColor3 = Color3.fromRGB(40, 43, 52)
-			end
-			refreshActionButtonText()
-		end)
-	end
+	checkBtn.MouseButton1Click:Connect(function()
+		isButtonMode = not isButtonMode
+		if isButtonMode then
+			respawnTweenPending = false
+			checkBtn.Text = "[✓] Chế độ Nút bấm"
+			checkBtn.BackgroundColor3 = Color3.fromRGB(60, 95, 140)
+		else
+			checkBtn.Text = "[ ] Chế độ Nút bấm"
+			checkBtn.BackgroundColor3 = Color3.fromRGB(40, 43, 52)
+		end
+		refreshActionButtonText()
+	end)
 
 	refreshActionButtonText()
 end

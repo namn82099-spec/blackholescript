@@ -7,13 +7,11 @@ local FIXED_PLATFORM_POS = Vector3.new(0, 1000, 0)
 local PLATFORM_SIZE = Vector3.new(200, 2, 200)
 local PLATFORM_NAME = "SharedSkyPlatform_Client"
 local TWEEN_SPEED = 150 -- studs / giây
-local SKY_CLIMB_STUDS = 600 -- bay thẳng đứng lên trời 600 stud trước khi tween tới vị trí
+local SKY_CLIMB_STUDS = 700 -- bay thẳng đứng lên trời 700 stud trước khi tween tới vị trí
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local TextChatService = game:GetService("TextChatService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -29,10 +27,11 @@ local noclipConn = nil
 local freezeRenderConn = nil
 local freezeHeartConn = nil
 local frozenCFrame = nil
-local altResetTriggered = false
 local respawnTweenPending = false
+local tweenToken = 0
 
-local currentPlatformPos = FIXED_PLATFORM_POS
+-- Điểm được set qua nút SET PLATFORM (nil = dùng vị trí platform cũ mặc định)
+local customSetPoint = nil
 local savedOriginCFrame = nil
 local refreshActionButtonText = nil
 
@@ -40,15 +39,19 @@ local function isAliveChar(char)
 	if not char then return false end
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	local hrp = char:FindFirstChild("HumanoidRootPart")
-	return hum ~= nil and hrp ~= nil and hum.Parent ~= nil and hrp.Parent ~= nil and hum:GetState() ~= Enum.HumanoidStateType.Dead
+	if not hum or not hrp or not hum.Parent or not hrp.Parent then
+		return false
+	end
+	local state = hum:GetState()
+	return state ~= Enum.HumanoidStateType.Dead and hum.Health > 0
 end
 
 -- ==========================================
--- DUY TRÌ DUY NHẤT 1 PLATFORM (CHỈ DI CHUYỂN, KHÔNG TẠO MỚI KHI SET)
+-- TẠO 1 PLATFORM DUY NHẤT LÚC ĐẦU (GIỮ NGUYÊN, KHÔNG DI CHUYỂN)
 -- ==========================================
-local skyPlatform = workspace:FindFirstChild(PLATFORM_NAME)
+local skyPlatform = nil
 
-local function getOrInitPlatform()
+local function initInitialPlatform()
 	if skyPlatform and skyPlatform.Parent then
 		return skyPlatform
 	end
@@ -62,7 +65,7 @@ local function getOrInitPlatform()
 	local part = Instance.new("Part")
 	part.Name = PLATFORM_NAME
 	part.Size = PLATFORM_SIZE
-	part.Position = currentPlatformPos
+	part.Position = FIXED_PLATFORM_POS
 	part.Anchored = true
 	part.CanCollide = true
 	part.Material = Enum.Material.SmoothPlastic
@@ -75,88 +78,16 @@ local function getOrInitPlatform()
 	return part
 end
 
-local function movePlatformTo(pos)
-	currentPlatformPos = pos
-	local plat = getOrInitPlatform()
-	plat.Size = PLATFORM_SIZE
-	plat.Position = currentPlatformPos
-	plat.Anchored = true
-	plat.CanCollide = true
-	return plat
-end
+initInitialPlatform()
 
-movePlatformTo(currentPlatformPos)
-
--- ==========================================
--- ĐỒNG BỘ VỊ TRÍ PLATFORM SANG MÁY ALT
--- ==========================================
-local SYNC_PREFIX = "__SKYPLAT_SYNC__:"
-
-local function parseSyncMessage(msg)
-	if typeof(msg) ~= "string" then return nil end
-	if string.sub(msg, 1, #SYNC_PREFIX) ~= SYNC_PREFIX then return nil end
-	local body = string.sub(msg, #SYNC_PREFIX + 1)
-	local x, y, z = string.match(body, "^([%-?%d%.]+),([%-?%d%.]+),([%-?%d%.]+)$")
-	if x and y and z then
-		return Vector3.new(tonumber(x), tonumber(y), tonumber(z))
-	end
-	return nil
-end
-
-local function broadcastPlatformPos(vec3)
-	local payload = string.format("%s%.2f,%.2f,%.2f", SYNC_PREFIX, vec3.X, vec3.Y, vec3.Z)
-	pcall(function()
-		if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-			local general = TextChatService:FindFirstChild("TextChannels")
-				and (TextChatService.TextChannels:FindFirstChild("RBXGeneral") or TextChatService.TextChannels:GetChildren()[1])
-			if general and general:IsA("TextChannel") then
-				general:SendAsync(payload)
-				return
-			end
-		end
-	end)
-	pcall(function()
-		local chatEvents = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
-		local sayMsg = chatEvents and chatEvents:FindFirstChild("SayMessageRequest")
-		if sayMsg then
-			sayMsg:FireServer(payload, "All")
-		end
-	end)
-end
-
-if role == "alt" then
-	pcall(function()
-		TextChatService.MessageReceived:Connect(function(textChatMessage)
-			local sender = textChatMessage.TextSource and Players:GetPlayerByUserId(textChatMessage.TextSource.UserId)
-			if sender and sender.Name == OwnerName then
-				local pos = parseSyncMessage(textChatMessage.Text)
-				if pos then
-					movePlatformTo(pos)
-				end
-			end
-		end)
-	end)
-
-	Players.PlayerChatted:Connect(function(_, sender, message)
-		if sender and sender.Name == OwnerName then
-			local pos = parseSyncMessage(message)
-			if pos then
-				movePlatformTo(pos)
-			end
-		end
-	end)
-end
-
--- Ấn nút SET PLATFORM trên máy owner: chỉ dời platform hiện tại tới vị trí đứng (không tạo mới)
-local function setPlatformAtCurrentPosition()
+-- Ấn nút SET PLATFORM: chỉ lưu điểm hiện tại trên máy owner (không tạo/dời platform)
+local function setPointOnly()
 	if role ~= "owner" then return end
 	local char = LocalPlayer.Character
 	if not isAliveChar(char) then return end
 	local hrp = char:FindFirstChild("HumanoidRootPart")
 
-	local newPos = Vector3.new(hrp.Position.X, hrp.Position.Y - (PLATFORM_SIZE.Y / 2) - 0.1, hrp.Position.Z)
-	movePlatformTo(newPos)
-	broadcastPlatformPos(newPos)
+	customSetPoint = hrp.Position
 end
 
 -- ==========================================
@@ -274,9 +205,10 @@ local function startFreezeAtCurrentSpot(hrp)
 end
 
 -- ==========================================
--- TWEEN 3 CHẶNG (BAY LÊN 600 STUD -> TỚI VỊ TRÍ)
+-- TWEEN 3 CHẶNG (BAY LÊN 700 STUD -> TỚI VỊ TRÍ)
 -- ==========================================
 local function cancelActiveTween()
+	tweenToken += 1
 	activeTweenSequence = false
 	if currentTween then
 		currentTween:Cancel()
@@ -284,10 +216,11 @@ local function cancelActiveTween()
 	end
 end
 
-local function tweenSingleSegment(targetCFrame)
+local function tweenSingleSegment(targetCFrame, myToken)
 	local char = LocalPlayer.Character
 	if not isAliveChar(char) then return false end
 	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return false end
 
 	if currentTween then
 		currentTween:Cancel()
@@ -317,71 +250,93 @@ local function tweenSingleSegment(targetCFrame)
 
 	tween:Play()
 
-	while not completed and not cancelled and activeTweenSequence do
+	while not completed and not cancelled and activeTweenSequence and (tweenToken == myToken) do
 		local c = LocalPlayer.Character
-		if not isAliveChar(c) then
+		if not c or not c.Parent or not c:FindFirstChild("HumanoidRootPart") then
+			tween:Cancel()
+			return false
+		end
+		local h = c:FindFirstChildOfClass("Humanoid")
+		if not h or h.Health <= 0 then
 			tween:Cancel()
 			return false
 		end
 		task.wait()
 	end
 
-	return completed and activeTweenSequence
+	return completed and activeTweenSequence and (tweenToken == myToken)
 end
 
 local function tweenViaSkyToTarget(targetCFrame, onComplete)
 	local char = LocalPlayer.Character
 	if not isAliveChar(char) then return end
 	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
 
 	cancelActiveTween()
 	stopFreeze()
+	local myToken = tweenToken
 	activeTweenSequence = true
 
 	task.spawn(function()
-		if not isAliveChar(LocalPlayer.Character) then
-			activeTweenSequence = false
+		local c = LocalPlayer.Character
+		local r = c and c:FindFirstChild("HumanoidRootPart")
+		if not c or not r or tweenToken ~= myToken then
+			if tweenToken == myToken then
+				activeTweenSequence = false
+			end
 			return
 		end
 
-		local startPos = hrp.Position
-		-- Chặng 1: bay thẳng đứng lên trời 600 stud
+		local startPos = r.Position
+		-- Chặng 1: bay thẳng đứng lên trời 700 stud
 		local climbUpCF = CFrame.new(startPos.X, startPos.Y + SKY_CLIMB_STUDS, startPos.Z) * targetCFrame.Rotation
-		if not tweenSingleSegment(climbUpCF) then
-			activeTweenSequence = false
+		if not tweenSingleSegment(climbUpCF, myToken) then
+			if tweenToken == myToken then
+				activeTweenSequence = false
+			end
 			return
 		end
 
-		-- Chặng 2: tween ngang tới tọa độ đích ở độ cao +600 stud
+		-- Chặng 2: tween ngang tới tọa độ đích ở độ cao +700 stud
 		local aboveTargetCF = CFrame.new(targetCFrame.Position.X, startPos.Y + SKY_CLIMB_STUDS, targetCFrame.Position.Z) * targetCFrame.Rotation
-		if not tweenSingleSegment(aboveTargetCF) then
-			activeTweenSequence = false
+		if not tweenSingleSegment(aboveTargetCF, myToken) then
+			if tweenToken == myToken then
+				activeTweenSequence = false
+			end
 			return
 		end
 
 		-- Chặng 3: hạ xuống đúng điểm đích
-		if not tweenSingleSegment(targetCFrame) then
-			activeTweenSequence = false
+		if not tweenSingleSegment(targetCFrame, myToken) then
+			if tweenToken == myToken then
+				activeTweenSequence = false
+			end
 			return
 		end
 
-		activeTweenSequence = false
-		local finalChar = LocalPlayer.Character
-		local finalRoot = finalChar and finalChar:FindFirstChild("HumanoidRootPart")
-		if finalChar and finalRoot and onComplete then
-			onComplete(finalChar, finalRoot)
+		if tweenToken == myToken then
+			activeTweenSequence = false
+			local finalChar = LocalPlayer.Character
+			local finalRoot = finalChar and finalChar:FindFirstChild("HumanoidRootPart")
+			if finalChar and finalRoot and onComplete then
+				onComplete(finalChar, finalRoot)
+			end
 		end
 	end)
 end
 
-local function getPlatformStandCFrame()
-	local plat = getOrInitPlatform()
+local function getTargetStandCFrame()
+	if customSetPoint then
+		return CFrame.new(customSetPoint.X, customSetPoint.Y + 3.2, customSetPoint.Z)
+	end
+	local plat = initInitialPlatform()
 	local topY = plat.Position.Y + (plat.Size.Y / 2) + 3.2
 	return CFrame.new(plat.Position.X, topY, plat.Position.Z)
 end
 
 -- ==========================================
--- HÀNH ĐỘNG LÊN PLATFORM / TWEEN VỀ VỊ TRÍ CŨ
+-- HÀNH ĐỘNG LÊN ĐIỂM / TWEEN VỀ VỊ TRÍ CŨ
 -- ==========================================
 local function goUpToPlatform()
 	local char = LocalPlayer.Character
@@ -392,7 +347,7 @@ local function goUpToPlatform()
 		savedOriginCFrame = hrp.CFrame
 	end
 
-	local targetCF = getPlatformStandCFrame()
+	local targetCF = getTargetStandCFrame()
 
 	if role == "owner" then
 		setNoclip(true)
@@ -426,49 +381,9 @@ local function goBackToOrigin()
 end
 
 -- ==========================================
--- RESET KIỂU NAMELESS ADMIN (CHỈ MÁY ALT, 1 LẦN / LẦN SPAWN)
--- ==========================================
-local function namelessStyleResetAlt()
-	if role ~= "alt" or altResetTriggered then return end
-	local char = LocalPlayer.Character
-	if not char then return end
-
-	altResetTriggered = true
-	cancelActiveTween()
-	stopFreeze()
-	setNoclip(false)
-
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if hum then
-		hum.Sit = false
-		pcall(function()
-			hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
-			hum:ChangeState(Enum.HumanoidStateType.Dead)
-		end)
-		hum.Health = 0
-	end
-
-	task.delay(0.05, function()
-		if char and char.Parent then
-			pcall(function()
-				char:BreakJoints()
-			end)
-		end
-	end)
-end
-
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then return end
-	if role == "alt" and input.KeyCode == Enum.KeyCode.R then
-		namelessStyleResetAlt()
-	end
-end)
-
--- ==========================================
 -- THEO DÕI CHẾT & RESPAWN (TỰ TWEEN VỀ KHI CHẾT TRÊN ALT TOGGLE)
 -- ==========================================
 local function hookCharacter(char)
-	altResetTriggered = false
 	stopFreeze()
 
 	local hum = char:WaitForChild("Humanoid", 10)
@@ -490,13 +405,17 @@ if LocalPlayer.Character then
 end
 
 LocalPlayer.CharacterAdded:Connect(function(newChar)
-	getOrInitPlatform()
 	hookCharacter(newChar)
 
 	if role == "alt" and (not isButtonMode) and isActive and respawnTweenPending and savedOriginCFrame then
 		respawnTweenPending = false
 		local hrp = newChar:WaitForChild("HumanoidRootPart", 10)
-		if hrp then
+		local hum = newChar:WaitForChild("Humanoid", 10)
+		if hrp and hum then
+			local elapsed = 0
+			while hum.Health <= 0 and elapsed < 3 do
+				elapsed += task.wait(0.05)
+			end
 			task.wait(0.25)
 			setNoclip(true)
 			tweenViaSkyToTarget(savedOriginCFrame, function(_, root)
@@ -639,7 +558,7 @@ local function buildGui()
 		setCorner.Parent = setPlatBtn
 
 		setPlatBtn.MouseButton1Click:Connect(function()
-			setPlatformAtCurrentPosition()
+			setPointOnly()
 		end)
 	end
 

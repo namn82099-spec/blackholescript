@@ -265,7 +265,7 @@ local function startFreezeAtCurrentSpot(hrp, overrideCFrame)
 end
 
 -- ==========================================
--- DÒ NHẸ BẰNG RAYCAST & TRƯỢT 1 HƯỚNG KHÔNG DELAY
+-- DÒ NHẸ BẰNG RAYCAST & BƯỚC NÉ VẬT CẢN
 -- ==========================================
 local cachedRayParams = nil
 local cachedRayChar = nil
@@ -300,7 +300,8 @@ local function castRay(origin, vec, char)
 	return isSolidHit(res) and res or nil
 end
 
-local function findFastDodgePos(currentPos, goalPos, hitRes, char)
+-- Bước né vật cản: chọn hướng trượt trái/phải thoáng nhất và trả về điểm né
+local function stepDodgeObstacle(currentPos, goalPos, hitRes, char)
 	local delta = goalPos - currentPos
 	local horiz = Vector3.new(delta.X, 0, delta.Z)
 	local fH = (horiz.Magnitude > 0.05) and horiz.Unit or Vector3.new(0, 0, -1)
@@ -308,21 +309,22 @@ local function findFastDodgePos(currentPos, goalPos, hitRes, char)
 
 	local n = hitRes and hitRes.Normal or Vector3.zero
 	local nH = Vector3.new(n.X, 0, n.Z)
-	local d1 = (nH.Magnitude > 0.1) and nH.Unit or right
-	local d2 = -d1
+	local dirA = (nH.Magnitude > 0.1) and nH.Unit or right
+	local dirB = -dirA
 
-	for _, dist in ipairs({ DODGE_MARGIN, DODGE_MARGIN + 20 }) do
-		local c1 = Vector3.new(currentPos.X + d1.X * dist, currentPos.Y, currentPos.Z + d1.Z * dist)
-		if not castRay(currentPos, c1 - currentPos, char) then
-			return c1
+	for _, dist in ipairs({ DODGE_MARGIN, DODGE_MARGIN + 20, DODGE_MARGIN + 40 }) do
+		local candA = Vector3.new(currentPos.X + dirA.X * dist, currentPos.Y, currentPos.Z + dirA.Z * dist)
+		if not castRay(currentPos, candA - currentPos, char) then
+			return candA
 		end
-		local c2 = Vector3.new(currentPos.X + d2.X * dist, currentPos.Y, currentPos.Z + d2.Z * dist)
-		if not castRay(currentPos, c2 - currentPos, char) then
-			return c2
+
+		local candB = Vector3.new(currentPos.X + dirB.X * dist, currentPos.Y, currentPos.Z + dirB.Z * dist)
+		if not castRay(currentPos, candB - currentPos, char) then
+			return candB
 		end
 	end
 
-	return Vector3.new(currentPos.X + d1.X * DODGE_MARGIN, currentPos.Y, currentPos.Z + d1.Z * DODGE_MARGIN)
+	return Vector3.new(currentPos.X + right.X * DODGE_MARGIN, currentPos.Y, currentPos.Z + right.Z * DODGE_MARGIN)
 end
 
 -- ==========================================
@@ -415,7 +417,7 @@ local function moveSmoothlyWithDodge(goalCFrame, startBaseY, allowClimbCheck, my
 		if not c or not r then return false end
 		if (r.Position - goalCFrame.Position).Magnitude <= 1.2 then return true end
 
-		if dodgeAttempts >= 4 then
+		if dodgeAttempts >= 6 then
 			setNoclip(true)
 			return tweenSingleSegment(goalCFrame, myToken, nil, TWEEN_SPEED)
 		end
@@ -430,7 +432,7 @@ local function moveSmoothlyWithDodge(goalCFrame, startBaseY, allowClimbCheck, my
 			local probeVec = (delta / dist) * math.min(dist, LOOK_AHEAD_STUDS)
 			local hit = castRay(currRoot.Position, probeVec, currChar)
 			if hit then
-				return findFastDodgePos(currRoot.Position, segGoal, hit, currChar)
+				return stepDodgeObstacle(currRoot.Position, segGoal, hit, currChar)
 			end
 			return nil
 		end, TWEEN_SPEED)
@@ -444,14 +446,24 @@ local function moveSmoothlyWithDodge(goalCFrame, startBaseY, allowClimbCheck, my
 		if not c2 or not r2 then return false end
 
 		local sideCF = CFrame.new(dodgePos.X, r2.Position.Y, dodgePos.Z) * goalCFrame.Rotation
-		local sideOk = tweenSingleSegment(sideCF, myToken, nil, DODGE_SPEED)
+		local sideOk = tweenSingleSegment(sideCF, myToken, function(currChar, currRoot, segGoal)
+			local delta = segGoal - currRoot.Position
+			local dist = delta.Magnitude
+			if dist <= 0.1 then return nil end
+			local probeVec = (delta / dist) * math.min(dist, LOOK_AHEAD_STUDS)
+			local hit = castRay(currRoot.Position, probeVec, currChar)
+			if hit then
+				return stepDodgeObstacle(currRoot.Position, segGoal, hit, currChar)
+			end
+			return nil
+		end, DODGE_SPEED)
+
 		if not sideOk then return false end
 	end
 
 	return false
 end
 
--- Bay thẳng lên độ cao SKY_CLIMB_STUDS bằng noclip để không bị kẹt/khựng giữa chừng
 local function climbStraightToHeight(targetY, rotationCF, myToken)
 	if isUnloaded or not activeTweenSequence or tweenToken ~= myToken then return false end
 	local c = LocalPlayer.Character

@@ -271,7 +271,7 @@ local function startFreezeAtCurrentSpot(hrp)
 end
 
 -- ==========================================
--- TWEEN 3 CHẶNG (BAY LÊN 700 STUD -> TỚI VỊ TRÍ)
+-- TWEEN 3 CHẶNG THUẦN (BAY LÊN 700 STUD -> TỚI VỊ TRÍ)
 -- ==========================================
 local function cancelActiveTween()
 	tweenToken += 1
@@ -318,7 +318,8 @@ local function tweenSingleSegment(targetCFrame, myToken)
 
 	while not completed and not cancelled and activeTweenSequence and (tweenToken == myToken) do
 		local c = LocalPlayer.Character
-		if not c or not c.Parent or not c:FindFirstChild("HumanoidRootPart") then
+		local r = c and c:FindFirstChild("HumanoidRootPart")
+		if not c or not c.Parent or not r or not r.Parent then
 			tween:Cancel()
 			return false
 		end

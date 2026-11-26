@@ -1,16 +1,17 @@
 -- ==========================================
--- CẤU HÌNH CHỦ NHÂN & VỊ TRÍ PLATFORM
+-- CẤU HÌNH CHỦ NHÂN & 1 PLATFORM DUY NHẤT
 -- ==========================================
 local OwnerName = "tinhtrungcovij" -- Thay tên tài khoản chính vào đây
 
--- Tọa độ cố định chung cho cả 2 máy (chỉnh lại nếu muốn đặt ở tọa độ X, Z khác)
+-- ĐỂ CHUNG 1 TỌA ĐỘ NÀY TRÊN CẢ 2 MÁY
 local FIXED_PLATFORM_POS = Vector3.new(0, 1000, 0)
 local PLATFORM_SIZE = Vector3.new(20, 2, 20)
+local PLATFORM_NAME = "SharedSkyPlatform_Client"
 local TWEEN_SPEED = 300 -- studs / giây
 
--- Tốc độ trừ máu từ từ về 1 cho máy alt (máu trừ mỗi bước)
-local HP_DRAIN_STEP = 2
-local HP_DRAIN_INTERVAL = 0.02 -- ~mỗi 20ms trừ dần
+-- Tốc độ trừ máu từ từ về 1 cho máy alt
+local HP_DRAIN_STEP = 1
+local HP_DRAIN_INTERVAL = 0.01 -- ~mỗi 10ms trừ 1 máu
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -48,16 +49,28 @@ local function stopHpDrain()
 end
 
 -- ==========================================
--- TẠO CLIENTSIDE PLATFORM CỐ ĐỊNH 1 CHỖ
+-- DUY TRÌ DUY NHẤT 1 PLATFORM TẠI FIXED_PLATFORM_POS
 -- ==========================================
-local function createPlatform()
-	local oldPart = workspace:FindFirstChild("OwnerSkyPlatform_Client")
-	if oldPart then
-		oldPart:Destroy()
+local skyPlatform = nil
+
+local function ensureSinglePlatform()
+	-- Xóa mọi platform trùng tên cũ để tránh tạo chồng / lệch chỗ
+	for _, obj in ipairs(workspace:GetChildren()) do
+		if obj:IsA("BasePart") and obj.Name == PLATFORM_NAME and obj ~= skyPlatform then
+			obj:Destroy()
+		end
+	end
+
+	if skyPlatform and skyPlatform.Parent then
+		skyPlatform.Size = PLATFORM_SIZE
+		skyPlatform.Position = FIXED_PLATFORM_POS
+		skyPlatform.Anchored = true
+		skyPlatform.CanCollide = true
+		return skyPlatform
 	end
 
 	local part = Instance.new("Part")
-	part.Name = "OwnerSkyPlatform_Client"
+	part.Name = PLATFORM_NAME
 	part.Size = PLATFORM_SIZE
 	part.Position = FIXED_PLATFORM_POS
 	part.Anchored = true
@@ -68,18 +81,16 @@ local function createPlatform()
 	part.BottomSurface = Enum.SurfaceType.Smooth
 	part.Parent = workspace
 
+	skyPlatform = part
 	return part
 end
 
-local skyPlatform = createPlatform()
+ensureSinglePlatform()
 
 LocalPlayer.CharacterAdded:Connect(function()
 	altResetTriggered = false
 	stopHpDrain()
-	task.wait(0.3)
-	if not skyPlatform or not skyPlatform.Parent then
-		skyPlatform = createPlatform()
-	end
+	ensureSinglePlatform()
 end)
 
 -- ==========================================
@@ -87,8 +98,9 @@ end)
 -- ==========================================
 local function startDrainingHealthToOne(hum)
 	stopHpDrain()
-	if not hum or hum.Health <= 1 then
-		if hum and hum.Health > 0 then
+	if not hum or hum.Parent == nil then return end
+	if hum.Health <= 1 then
+		if hum.Health > 0 then
 			hum.Health = 1
 		end
 		return
@@ -223,11 +235,9 @@ local function tweenToCFrame(targetCFrame, onComplete)
 end
 
 local function getPlatformStandCFrame()
-	if not skyPlatform or not skyPlatform.Parent then
-		skyPlatform = createPlatform()
-	end
-	local topY = skyPlatform.Position.Y + (skyPlatform.Size.Y / 2) + 3.2
-	return CFrame.new(skyPlatform.Position.X, topY, skyPlatform.Position.Z)
+	local plat = ensureSinglePlatform()
+	local topY = plat.Position.Y + (plat.Size.Y / 2) + 3.2
+	return CFrame.new(plat.Position.X, topY, plat.Position.Z)
 end
 
 -- ==========================================

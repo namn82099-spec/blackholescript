@@ -63,6 +63,20 @@ local function isAliveChar(char)
 	return hum:GetState() ~= Enum.HumanoidStateType.Dead
 end
 
+local function zeroCharacterVelocity(char)
+	if not char then return end
+	for _, obj in ipairs(char:GetDescendants()) do
+		if obj:IsA("BasePart") then
+			pcall(function()
+				obj.AssemblyLinearVelocity = Vector3.zero
+				obj.AssemblyAngularVelocity = Vector3.zero
+				obj.Velocity = Vector3.zero
+				obj.RotVelocity = Vector3.zero
+			end)
+		end
+	end
+end
+
 -- ==========================================
 -- TẠO 1 PLATFORM DUY NHẤT LÚC ĐẦU (GIỮ NGUYÊN, KHÔNG DI CHUYỂN)
 -- ==========================================
@@ -260,21 +274,18 @@ local function lockRootInPlace()
 	end
 
 	hrp.Anchored = true
-	hrp.AssemblyLinearVelocity = Vector3.zero
-	hrp.AssemblyAngularVelocity = Vector3.zero
-	hrp.RotVelocity = Vector3.zero
-	hrp.Velocity = Vector3.zero
+	zeroCharacterVelocity(char)
 
 	if (hrp.CFrame.Position - frozenCFrame.Position).Magnitude > 0.001 or hrp.CFrame ~= frozenCFrame then
 		hrp.CFrame = frozenCFrame
 	end
 end
 
-local function startFreezeAtCurrentSpot(hrp)
+local function startFreezeAtCurrentSpot(hrp, overrideCFrame)
 	stopFreeze()
 	if isUnloaded or not hrp or not hrp.Parent then return end
 
-	frozenCFrame = hrp.CFrame
+	frozenCFrame = overrideCFrame or hrp.CFrame
 	lockRootInPlace()
 
 	freezeRenderConn = RunService.RenderStepped:Connect(function()
@@ -525,9 +536,13 @@ local function tweenViaSkyToTarget(targetCFrame, onComplete)
 			return
 		end
 
+		-- Bật noclip trước chặng 3 để chạm đất tốc độ cao không bị va chạm bật nảy
+		setNoclip(true)
+
 		-- Chặng 3: hạ xuống đúng điểm đích
 		local ok3 = tweenSingleSegment(targetCFrame, myToken, nil)
 		if not ok3 then
+			setNoclip(false)
 			if tweenToken == myToken then
 				activeTweenSequence = false
 			end
@@ -538,8 +553,12 @@ local function tweenViaSkyToTarget(targetCFrame, onComplete)
 			activeTweenSequence = false
 			local finalChar = LocalPlayer.Character
 			local finalRoot = finalChar and finalChar:FindFirstChild("HumanoidRootPart")
-			if finalChar and finalRoot and onComplete then
-				onComplete(finalChar, finalRoot)
+			if finalChar and finalRoot then
+				zeroCharacterVelocity(finalChar)
+				finalRoot.CFrame = targetCFrame
+				if onComplete then
+					onComplete(finalChar, finalRoot, targetCFrame)
+				end
 			end
 		end
 	end)
@@ -571,15 +590,17 @@ local function goUpToPlatform()
 
 	if role == "owner" then
 		setNoclip(true)
-		tweenViaSkyToTarget(targetCF, function(_, root)
+		tweenViaSkyToTarget(targetCF, function(finalChar, root)
+			zeroCharacterVelocity(finalChar)
 			setNoclip(false)
-			root.AssemblyLinearVelocity = Vector3.zero
 		end)
 	else
-		setNoclip(false)
-		tweenViaSkyToTarget(targetCF, function(_, root)
+		setNoclip(true)
+		tweenViaSkyToTarget(targetCF, function(finalChar, root, landedCF)
+			-- Freeze ngay lập tức tại vị trí đích trước khi nhả noclip để không bật nảy
+			startFreezeAtCurrentSpot(root, landedCF)
+			zeroCharacterVelocity(finalChar)
 			setNoclip(false)
-			startFreezeAtCurrentSpot(root)
 		end)
 	end
 end
@@ -594,15 +615,15 @@ local function goBackToOrigin()
 	setNoclip(true)
 
 	local backCF = savedOriginCFrame or hrp.CFrame
-	tweenViaSkyToTarget(backCF, function(_, root)
+	tweenViaSkyToTarget(backCF, function(finalChar, root)
+		zeroCharacterVelocity(finalChar)
 		setNoclip(false)
 		savedOriginCFrame = nil
-		root.AssemblyLinearVelocity = Vector3.zero
 	end)
 end
 
 -- ==========================================
--- AUTO RESET KHI HP <= 97 -> ĐỢI 5S ẤN R -> ĐỢI 2S TWEEN LÊN PLATFORM SET
+-- AUTO RESET KHI HP <= 97 -> ĐỢI 6S ẤN R -> ĐỢI 2S TWEEN LÊN PLATFORM SET
 -- ==========================================
 local function pressKeyR()
 	if isUnloaded then return end
@@ -647,8 +668,8 @@ local function triggerAutoReset97Flow(char)
 	task.spawn(function()
 		forceResetCharacter(char)
 
-		-- Đợi 5s rồi ấn R
-		task.wait(5)
+		-- Đợi 6s rồi ấn R
+		task.wait(6)
 		if isUnloaded or not isAutoReset97 then
 			autoResetBusy = false
 			return
@@ -732,10 +753,10 @@ trackConn(LocalPlayer.CharacterAdded:Connect(function(newChar)
 			task.wait(0.25)
 			if isUnloaded then return end
 			setNoclip(true)
-			tweenViaSkyToTarget(savedOriginCFrame, function(_, root)
+			tweenViaSkyToTarget(savedOriginCFrame, function(finalChar, root)
+				zeroCharacterVelocity(finalChar)
 				setNoclip(false)
 				savedOriginCFrame = nil
-				root.AssemblyLinearVelocity = Vector3.zero
 			end)
 		end
 	end
@@ -964,8 +985,8 @@ local function buildGui()
 		reset97Btn.Size = UDim2.new(1, -16, 0, 28)
 		reset97Btn.Position = UDim2.fromOffset(8, 108)
 		reset97Btn.BackgroundColor3 = Color3.fromRGB(40, 43, 52)
-		reset97Btn.Text = "[ ] Reset HP<=97 (5s->R->2s)"
-		reset97Btn.TextColor3 = Color3.fromRGB(225, 225, 255)
+		reset97Btn.Text = "[ ] Reset HP<=97 (6s->R->2s)"
+		reset97Btn.TextColor3 = Color3.fromRGB(225, 225, 225)
 		reset97Btn.Font = Enum.Font.GothamSemibold
 		reset97Btn.TextSize = 11
 		reset97Btn.Parent = frame
@@ -979,14 +1000,14 @@ local function buildGui()
 			isAutoReset97 = not isAutoReset97
 			if isAutoReset97 then
 				respawnTweenPending = false
-				reset97Btn.Text = "[✓] Reset HP<=97 (5s->R->2s)"
+				reset97Btn.Text = "[✓] Reset HP<=97 (6s->R->2s)"
 				reset97Btn.BackgroundColor3 = Color3.fromRGB(145, 85, 40)
 				if LocalPlayer.Character then
 					attachHp97Watcher(LocalPlayer.Character)
 				end
 			else
 				autoResetBusy = false
-				reset97Btn.Text = "[ ] Reset HP<=97 (5s->R->2s)"
+				reset97Btn.Text = "[ ] Reset HP<=97 (6s->R->2s)"
 				reset97Btn.BackgroundColor3 = Color3.fromRGB(40, 43, 52)
 			end
 		end)

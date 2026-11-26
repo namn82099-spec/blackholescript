@@ -12,6 +12,7 @@ local SKY_CLIMB_STUDS = 700 -- bay thẳng đứng lên trời 700 stud trước
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
+local TextChatService = game:GetService("TextChatService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -34,16 +35,36 @@ local tweenToken = 0
 local customSetPoint = nil
 local savedOriginCFrame = nil
 local refreshActionButtonText = nil
+local setPlatformFeedback = nil
+
+local function sendChatNotice(text)
+	pcall(function()
+		if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+			local general = TextChatService:FindFirstChild("TextChannels")
+				and (TextChatService.TextChannels:FindFirstChild("RBXGeneral") or TextChatService.TextChannels:GetChildren()[1])
+			if general and general:IsA("TextChannel") then
+				general:SendAsync(text)
+				return
+			end
+		end
+	end)
+	pcall(function()
+		local chatEvents = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+		local sayMsg = chatEvents and chatEvents:FindFirstChild("SayMessageRequest")
+		if sayMsg then
+			sayMsg:FireServer(text, "All")
+		end
+	end)
+end
 
 local function isAliveChar(char)
-	if not char then return false end
+	if not char or not char.Parent then return false end
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	local hrp = char:FindFirstChild("HumanoidRootPart")
 	if not hum or not hrp or not hum.Parent or not hrp.Parent then
 		return false
 	end
-	local state = hum:GetState()
-	return state ~= Enum.HumanoidStateType.Dead and hum.Health > 0
+	return hum:GetState() ~= Enum.HumanoidStateType.Dead
 end
 
 -- ==========================================
@@ -80,7 +101,7 @@ end
 
 initInitialPlatform()
 
--- Ấn nút SET PLATFORM: chỉ lưu điểm hiện tại trên máy owner (không tạo/dời platform)
+-- Ấn nút SET PLATFORM: chỉ lưu điểm hiện tại + báo lên chat (không tạo/dời platform)
 local function setPointOnly()
 	if role ~= "owner" then return end
 	local char = LocalPlayer.Character
@@ -88,6 +109,16 @@ local function setPointOnly()
 	local hrp = char:FindFirstChild("HumanoidRootPart")
 
 	customSetPoint = hrp.Position
+	if setPlatformFeedback then
+		setPlatformFeedback(customSetPoint)
+	end
+
+	sendChatNotice(string.format(
+		"[Platform] Đã set điểm: %d, %d, %d",
+		math.round(customSetPoint.X),
+		math.round(customSetPoint.Y),
+		math.round(customSetPoint.Z)
+	))
 end
 
 -- ==========================================
@@ -257,7 +288,7 @@ local function tweenSingleSegment(targetCFrame, myToken)
 			return false
 		end
 		local h = c:FindFirstChildOfClass("Humanoid")
-		if not h or h.Health <= 0 then
+		if not h or h:GetState() == Enum.HumanoidStateType.Dead then
 			tween:Cancel()
 			return false
 		end
@@ -413,7 +444,7 @@ LocalPlayer.CharacterAdded:Connect(function(newChar)
 		local hum = newChar:WaitForChild("Humanoid", 10)
 		if hrp and hum then
 			local elapsed = 0
-			while hum.Health <= 0 and elapsed < 3 do
+			while hum:GetState() == Enum.HumanoidStateType.Dead and elapsed < 3 do
 				elapsed += task.wait(0.05)
 			end
 			task.wait(0.25)
@@ -550,12 +581,26 @@ local function buildGui()
 		setPlatBtn.Text = "SET PLATFORM"
 		setPlatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 		setPlatBtn.Font = Enum.Font.GothamBold
-		setPlatBtn.TextSize = 12
+		setPlatBtn.TextSize = 11
 		setPlatBtn.Parent = frame
 
 		local setCorner = Instance.new("UICorner")
 		setCorner.CornerRadius = UDim.new(0, 6)
 		setCorner.Parent = setPlatBtn
+
+		local feedbackToken = 0
+		setPlatformFeedback = function(vec3)
+			feedbackToken += 1
+			local myFb = feedbackToken
+			setPlatBtn.Text = string.format("SET: %d, %d, %d", math.round(vec3.X), math.round(vec3.Y), math.round(vec3.Z))
+			setPlatBtn.BackgroundColor3 = Color3.fromRGB(45, 155, 95)
+			task.delay(1.5, function()
+				if feedbackToken == myFb and setPlatBtn and setPlatBtn.Parent then
+					setPlatBtn.Text = "SET PLATFORM"
+					setPlatBtn.BackgroundColor3 = Color3.fromRGB(85, 65, 145)
+				end
+			end)
+		end
 
 		setPlatBtn.MouseButton1Click:Connect(function()
 			setPointOnly()

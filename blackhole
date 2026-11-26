@@ -7,8 +7,10 @@ local FIXED_PLATFORM_POS = Vector3.new(0, 1000, 0)
 local PLATFORM_SIZE = Vector3.new(200, 2, 200)
 local PLATFORM_NAME = "SharedSkyPlatform_Client"
 local TWEEN_SPEED = 320
-local DODGE_SPEED = 160
-local DODGE_MARGIN = 22
+local DODGE_SPEED = 180
+local DODGE_MARGIN = 24
+local LOOK_AHEAD_STUDS = 36
+local SCAN_360_SEGMENTS = 16 -- chia vòng 360 độ thành 16 hướng (mỗi hướng 22.5 độ)
 local SKY_CLIMB_STUDS = 700
 local OBSTACLE_CHECK_START_STUDS = 400
 local OBSTACLE_CHECK_RADIUS = 12
@@ -265,14 +267,29 @@ local function startFreezeAtCurrentSpot(hrp, overrideCFrame)
 end
 
 -- ==========================================
--- KIỂM TRA VẬT CẢN & TÌM ĐIỂM NÉ AN TOÀN
+-- QUÉT 360 TRÁI-PHẢI-TRƯỚC-SAU & TRÊN-DƯỚI + TÌM ĐIỂM NÉ
 -- ==========================================
-local HORIZONTAL_DIRS = {
-	Vector3.new(1, 0, 0), Vector3.new(-1, 0, 0),
-	Vector3.new(0, 0, 1), Vector3.new(0, 0, -1),
-	Vector3.new(1, 0, 1).Unit, Vector3.new(-1, 0, 1).Unit,
-	Vector3.new(1, 0, -1).Unit, Vector3.new(-1, 0, -1).Unit,
-}
+local AHEAD_FRACTIONS = { 0.25, 0.5, 0.75, 1.0 }
+local PITCH_OFFSETS = { 0, 0.45, -0.45 } -- ngang, hơi lên, hơi xuống
+
+local function buildDirs360(segments)
+	local dirs = {}
+	local step = (math.pi * 2) / math.max(segments, 8)
+	for i = 0, segments - 1 do
+		local yaw = i * step
+		local hDir = Vector3.new(math.cos(yaw), 0, math.sin(yaw))
+		for _, pitch in ipairs(PITCH_OFFSETS) do
+			local cosP = math.cos(pitch)
+			local v = Vector3.new(hDir.X * cosP, math.sin(pitch), hDir.Z * cosP)
+			table.insert(dirs, v.Unit)
+		end
+	end
+	table.insert(dirs, Vector3.new(0, 1, 0))
+	table.insert(dirs, Vector3.new(0, -1, 0))
+	return dirs
+end
+
+local DIRS_360 = buildDirs360(SCAN_360_SEGMENTS)
 
 local function buildObstacleParams(char)
 	local params = OverlapParams.new()
@@ -287,7 +304,7 @@ local function buildObstacleParams(char)
 	return params
 end
 
-local function getBlockingPartAround(pos, radius, char)
+local function getBlockingPartAt(pos, radius, char)
 	local boxSize = Vector3.new(radius * 2, radius * 2, radius * 2)
 	local parts = workspace:GetPartBoundsInBox(CFrame.new(pos), boxSize, buildObstacleParams(char))
 	for _, p in ipairs(parts) do
@@ -298,30 +315,75 @@ local function getBlockingPartAround(pos, radius, char)
 	return nil
 end
 
-local function hasObstacleAround(pos, radius, char)
-	return getBlockingPartAround(pos, radius, char) ~= nil
+local function hasObstacleAt(pos, radius, char)
+	return getBlockingPartAt(pos, radius, char) ~= nil
 end
 
-local function findClearHorizontalPosition(currentPos, radius, char)
-	local blocker = getBlockingPartAround(currentPos, radius, char)
-	local anchor = blocker and blocker.Position or currentPos
-	local halfSpan = blocker and (math.max(blocker.Size.X, blocker.Size.Y, blocker.Size.Z) * 0.5) or 0
+local function getAheadObstacle360(currentPos, goalPos, radius, char)
+	if hasObstacleAt(currentPos, radius, char) then
+		return currentPos, getBlockingPartAt(currentPos, radius, char)
+	end
 
-	for _, offset in ipairs({ 0, 16, 32, 52 }) do
-		local dist = halfSpan + DODGE_MARGIN + offset
-		for _, dir in ipairs(HORIZONTAL_DIRS) do
-			local candidate = Vector3.new(anchor.X + dir.X * dist, currentPos.Y, anchor.Z + dir.Z * dist)
-			if not hasObstacleAround(candidate, radius + 4, char) then
-				return candidate
+	local delta = goalPos - currentPos
+	local dist = delta.Magnitude
+	if dist <= 0.1 then return nil, nil end
+
+	local mainDir = delta.Unit
+	local probeDist = math.min(dist, LOOK_AHEAD_STUDS)
+
+	-- Ưu tiên quét hướng đi chính trước, sau đó quét 360 quanh điểm dò
+	for _, frac in ipairs(AHEAD_FRACTIONS) do
+		local centerProbe = currentPos + mainDir * (probeDist * frac)
+		local directBlocker = getBlockingPartAt(centerProbe, radius, char)
+		if directBlocker then
+			return centerProbe, directBlocker
+		end
+
+		local ringRadius = radius * 0.85
+		for _, d in ipairs(DIRS_360) do
+			local ringPos = centerProbe + d * ringRadius
+			local blocker = getBlockingPartAt(ringPos, radius, char)
+			if blocker then
+				return ringPos, blocker
 			end
 		end
 	end
 
-	return Vector3.new(currentPos.X + halfSpan + DODGE_MARGIN + 15, currentPos.Y, currentPos.Z)
+	return nil, nil
+end
+
+local function findClearDodgePos360(currentPos, goalPos, blocker, radius, char)
+	local delta = goalPos - currentPos
+	local forward = (delta.Magnitude > 0.1) and delta.Unit or Vector3.new(0, 0, -1)
+	local halfSpan = blocker and (math.max(blocker.Size.X, blocker.Size.Y, blocker.Size.Z) * 0.5) or 0
+	local baseDist = halfSpan + DODGE_MARGIN
+
+	-- Sắp xếp các hướng 360 theo độ vuông góc với hướng tới đích để bẻ ngang/chéo dứt khoát
+	local sortedDirs = table.clone(DIRS_360)
+	table.sort(sortedDirs, function(a, b)
+		local perpA = 1 - math.abs(a:Dot(forward))
+		local perpB = 1 - math.abs(b:Dot(forward))
+		return perpA > perpB
+	end)
+
+	for _, extra in ipairs({ 0, 18, 36, 56 }) do
+		local d = baseDist + extra
+		for _, dir in ipairs(sortedDirs) do
+			local cand = Vector3.new(currentPos.X + dir.X * d, currentPos.Y, currentPos.Z + dir.Z * d)
+			if not hasObstacleAt(cand, radius + 3, char) then
+				return cand
+			end
+		end
+	end
+
+	local horiz = Vector3.new(forward.X, 0, forward.Z)
+	local fHoriz = (horiz.Magnitude > 0.05) and horiz.Unit or Vector3.new(0, 0, -1)
+	local right = Vector3.new(-fHoriz.Z, 0, fHoriz.X)
+	return Vector3.new(currentPos.X + right.X * (baseDist + 24), currentPos.Y, currentPos.Z + right.Z * (baseDist + 24))
 end
 
 -- ==========================================
--- TWEEN CÓ TỐC ĐỘ NÉ RIÊNG & KIỂM TRA VẬT CẢN
+-- TWEEN CÓ TỐC ĐỘ NÉ RIÊNG & KIỂM TRA MỖI FRAME
 -- ==========================================
 local function cancelActiveTween()
 	tweenToken += 1
@@ -364,7 +426,6 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 
 	tween:Play()
 
-	local lastCheck = 0
 	while not isUnloaded and not completed and not cancelled and activeTweenSequence and (tweenToken == myToken) do
 		local c = LocalPlayer.Character
 		local r = getHrp(c)
@@ -374,9 +435,8 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 			return false, false
 		end
 
-		if onStepCheck and (os.clock() - lastCheck) >= 0.06 then
-			lastCheck = os.clock()
-			local dodgePos = onStepCheck(c, r)
+		if onStepCheck then
+			local dodgePos = onStepCheck(c, r, targetCFrame.Position)
 			if dodgePos then
 				tween:Cancel()
 				return false, true, dodgePos
@@ -396,18 +456,19 @@ end
 
 local function moveSmoothlyWithDodge(goalCFrame, startBaseY, allowClimbCheck, myToken)
 	local dodgeAttempts = 0
-	while not isUnloaded and activeTweenSequence and (tweenToken == myToken) and dodgeAttempts < 12 do
+	while not isUnloaded and activeTweenSequence and (tweenToken == myToken) and dodgeAttempts < 24 do
 		local c = LocalPlayer.Character
 		local r = getHrp(c)
 		if not c or not r then return false end
 		if (r.Position - goalCFrame.Position).Magnitude <= 1.2 then return true end
 
-		local ok, shouldDodge, dodgePos = tweenSingleSegment(goalCFrame, myToken, function(currChar, currRoot)
+		local ok, shouldDodge, dodgePos = tweenSingleSegment(goalCFrame, myToken, function(currChar, currRoot, segGoal)
 			if allowClimbCheck and (currRoot.Position.Y - startBaseY) < OBSTACLE_CHECK_START_STUDS then
 				return nil
 			end
-			if hasObstacleAround(currRoot.Position, OBSTACLE_CHECK_RADIUS, currChar) then
-				return findClearHorizontalPosition(currRoot.Position, OBSTACLE_CHECK_RADIUS, currChar)
+			local _, blocker = getAheadObstacle360(currRoot.Position, segGoal, OBSTACLE_CHECK_RADIUS, currChar)
+			if blocker then
+				return findClearDodgePos360(currRoot.Position, segGoal, blocker, OBSTACLE_CHECK_RADIUS, currChar)
 			end
 			return nil
 		end, TWEEN_SPEED)
@@ -420,14 +481,17 @@ local function moveSmoothlyWithDodge(goalCFrame, startBaseY, allowClimbCheck, my
 		local r2 = getHrp(c2)
 		if not c2 or not r2 then return false end
 
-		local safeDodgePos = hasObstacleAround(dodgePos, OBSTACLE_CHECK_RADIUS, c2)
-			and findClearHorizontalPosition(dodgePos, OBSTACLE_CHECK_RADIUS, c2)
-			or dodgePos
+		local safeDodgePos = dodgePos
+		local blocker2 = getBlockingPartAt(safeDodgePos, OBSTACLE_CHECK_RADIUS, c2)
+		if blocker2 then
+			safeDodgePos = findClearDodgePos360(r2.Position, goalCFrame.Position, blocker2, OBSTACLE_CHECK_RADIUS, c2)
+		end
 
 		local sideCF = CFrame.new(safeDodgePos.X, r2.Position.Y, safeDodgePos.Z) * goalCFrame.Rotation
-		local sideOk = tweenSingleSegment(sideCF, myToken, function(currChar, currRoot)
-			if hasObstacleAround(currRoot.Position, OBSTACLE_CHECK_RADIUS, currChar) then
-				return findClearHorizontalPosition(currRoot.Position, OBSTACLE_CHECK_RADIUS, currChar)
+		local sideOk = tweenSingleSegment(sideCF, myToken, function(currChar, currRoot, segGoal)
+			local _, blocker = getAheadObstacle360(currRoot.Position, segGoal, OBSTACLE_CHECK_RADIUS, currChar)
+			if blocker then
+				return findClearDodgePos360(currRoot.Position, segGoal, blocker, OBSTACLE_CHECK_RADIUS, currChar)
 			end
 			return nil
 		end, DODGE_SPEED)

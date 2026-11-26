@@ -1,11 +1,21 @@
 -- ==========================================
--- CẤU HÌNH CHỦ NHÂN
+-- CẤU HÌNH CHỦ NHÂN & VỊ TRÍ PLATFORM
 -- ==========================================
 local OwnerName = "tinhtrungcovij" -- Thay tên tài khoản chính vào đây
+
+-- Tọa độ cố định chung cho cả 2 máy (chỉnh lại nếu muốn đặt ở tọa độ X, Z khác)
+local FIXED_PLATFORM_POS = Vector3.new(0, 1000, 0)
+local PLATFORM_SIZE = Vector3.new(20, 2, 20)
+local TWEEN_SPEED = 300 -- studs / giây
+
+-- Tốc độ trừ máu từ từ về 1 cho máy alt (máu trừ mỗi bước)
+local HP_DRAIN_STEP = 2
+local HP_DRAIN_INTERVAL = 0.02 -- ~mỗi 20ms trừ dần
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -13,16 +23,13 @@ local LocalPlayer = Players.LocalPlayer
 local role = (LocalPlayer.Name == OwnerName) and "owner" or "alt"
 local isMain = (role == "owner")
 
-local TWEEN_SPEED = 300 -- studs / giây
-local HEIGHT_OFFSET = 1000 -- độ cao đặt platform phía trên
-local PLATFORM_SIZE = Vector3.new(20, 2, 20)
-
 -- Trạng thái
 local isActive = false
-local isButtonMode = false -- Chỉ dùng cho máy owner
-local isTweening = false
+local isButtonMode = false
 local activeTween = nil
 local noclipConn = nil
+local hpDrainTask = nil
+local altResetTriggered = false
 
 local savedOriginCFrame = nil
 local savedWalkSpeed = 16
@@ -33,8 +40,15 @@ local function charValid(hum, hrp)
 	return hum and hrp and hum.Parent and hrp.Parent and hum.Health > 0
 end
 
+local function stopHpDrain()
+	if hpDrainTask then
+		task.cancel(hpDrainTask)
+		hpDrainTask = nil
+	end
+end
+
 -- ==========================================
--- TẠO CLIENTSIDE PLATFORM (20x20 STUDS, +1000 STUDS)
+-- TẠO CLIENTSIDE PLATFORM CỐ ĐỊNH 1 CHỖ
 -- ==========================================
 local function createPlatform()
 	local oldPart = workspace:FindFirstChild("OwnerSkyPlatform_Client")
@@ -42,16 +56,10 @@ local function createPlatform()
 		oldPart:Destroy()
 	end
 
-	local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-	local hrp = char:WaitForChild("HumanoidRootPart")
-
-	local basePos = hrp.Position
-	local platformPos = Vector3.new(basePos.X, basePos.Y + HEIGHT_OFFSET, basePos.Z)
-
 	local part = Instance.new("Part")
 	part.Name = "OwnerSkyPlatform_Client"
 	part.Size = PLATFORM_SIZE
-	part.Position = platformPos
+	part.Position = FIXED_PLATFORM_POS
 	part.Anchored = true
 	part.CanCollide = true
 	part.Material = Enum.Material.SmoothPlastic
@@ -66,9 +74,64 @@ end
 local skyPlatform = createPlatform()
 
 LocalPlayer.CharacterAdded:Connect(function()
-	task.wait(0.5)
+	altResetTriggered = false
+	stopHpDrain()
+	task.wait(0.3)
 	if not skyPlatform or not skyPlatform.Parent then
 		skyPlatform = createPlatform()
+	end
+end)
+
+-- ==========================================
+-- TRỪ MÁU TỪ TỪ VỀ 1 (CHỈ MÁY ALT)
+-- ==========================================
+local function startDrainingHealthToOne(hum)
+	stopHpDrain()
+	if not hum or hum.Health <= 1 then
+		if hum and hum.Health > 0 then
+			hum.Health = 1
+		end
+		return
+	end
+
+	hpDrainTask = task.spawn(function()
+		while hum and hum.Parent and hum.Health > 1 do
+			local nextHp = hum.Health - HP_DRAIN_STEP
+			if nextHp <= 1 then
+				hum.Health = 1
+				break
+			else
+				hum.Health = nextHp
+			end
+			task.wait(HP_DRAIN_INTERVAL)
+		end
+		hpDrainTask = nil
+	end)
+end
+
+-- ==========================================
+-- FORCE RESET KHI ẤN R (CHỈ MÁY ALT, 1 LẦN / LẦN SPAWN)
+-- ==========================================
+local function forceResetAltCharacter()
+	if isMain or altResetTriggered then return end
+	local char = LocalPlayer.Character
+	if not char then return end
+
+	altResetTriggered = true
+	stopHpDrain()
+
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.Health = 0
+		hum:ChangeState(Enum.HumanoidStateType.Dead)
+	end
+	char:BreakJoints()
+end
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if role == "alt" and input.KeyCode == Enum.KeyCode.R then
+		forceResetAltCharacter()
 	end
 end)
 
@@ -141,7 +204,6 @@ local function tweenToCFrame(targetCFrame, onComplete)
 	local distance = (hrp.Position - targetCFrame.Position).Magnitude
 	local duration = math.max(distance / TWEEN_SPEED, 0.05)
 
-	isTweening = true
 	hrp.Anchored = false
 
 	local info = TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
@@ -152,7 +214,6 @@ local function tweenToCFrame(targetCFrame, onComplete)
 		if activeTween == tween then
 			activeTween = nil
 		end
-		isTweening = false
 		if playbackState == Enum.PlaybackState.Completed and onComplete then
 			onComplete(hum, hrp)
 		end
@@ -183,11 +244,11 @@ local function goUpToPlatform()
 		savedOriginCFrame = hrp.CFrame
 	end
 
+	stopHpDrain()
 	setFrozen(false, hum, hrp)
 	local targetCF = getPlatformStandCFrame()
 
 	if role == "owner" then
-		-- Máy owner: bật noclip khi tween lên, xong thì tắt noclip để đứng trên platform
 		setNoclip(true)
 		tweenToCFrame(targetCF, function(h, r)
 			setNoclip(false)
@@ -196,13 +257,12 @@ local function goUpToPlatform()
 			end
 		end)
 	else
-		-- Máy alt: tween lên với noclip off, đến nơi noclip off + freeze tại chỗ + máu = 1
 		setNoclip(false)
 		tweenToCFrame(targetCF, function(h, r)
 			setNoclip(false)
 			if charValid(h, r) then
-				h.Health = 1
 				setFrozen(true, h, r)
+				startDrainingHealthToOne(h)
 			end
 		end)
 	end
@@ -215,6 +275,7 @@ local function goBackToOrigin()
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	if not charValid(hum, hrp) then return end
 
+	stopHpDrain()
 	setFrozen(false, hum, hrp)
 	setNoclip(true)
 

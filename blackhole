@@ -13,6 +13,7 @@ local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local TextChatService = game:GetService("TextChatService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -22,13 +23,16 @@ local role = (LocalPlayer.Name == OwnerName) and "owner" or "alt"
 -- Trạng thái
 local isActive = false
 local isButtonMode = false
+local isAutoReset97 = false
 local activeTweenSequence = false
 local currentTween = nil
 local noclipConn = nil
 local freezeRenderConn = nil
 local freezeHeartConn = nil
+local hpWatchConn = nil
 local frozenCFrame = nil
 local respawnTweenPending = false
+local autoResetBusy = false
 local tweenToken = 0
 
 -- Điểm được set qua nút SET PLATFORM (nil = dùng vị trí platform cũ mặc định)
@@ -448,10 +452,94 @@ local function goBackToOrigin()
 end
 
 -- ==========================================
+-- AUTO RESET KHI HP = 97 -> ĐỢI 7S ẤN R -> ĐỢI 2S TWEEN LÊN PLATFORM SET
+-- ==========================================
+local function pressKeyR()
+	pcall(function()
+		VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.R, false, game)
+		task.wait(0.06)
+		VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.R, false, game)
+	end)
+	pcall(function()
+		if typeof(keytap) == "function" then
+			keytap(0x52) -- 'R'
+		elseif typeof(keypress) == "function" and typeof(keyrelease) == "function" then
+			keypress(0x52)
+			task.wait(0.06)
+			keyrelease(0x52)
+		end
+	end)
+end
+
+local function forceResetCharacter(char)
+	if not char then return end
+	cancelActiveTween()
+	stopFreeze()
+	setNoclip(false)
+
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	pcall(function()
+		if hum then
+			hum.Health = 0
+			hum:ChangeState(Enum.HumanoidStateType.Dead)
+		end
+	end)
+	pcall(function()
+		char:BreakJoints()
+	end)
+end
+
+local function triggerAutoReset97Flow(char)
+	if role ~= "alt" or not isAutoReset97 or autoResetBusy then return end
+	autoResetBusy = true
+
+	task.spawn(function()
+		forceResetCharacter(char)
+
+		-- Đợi 7s rồi ấn R
+		task.wait(7)
+		if not isAutoReset97 then
+			autoResetBusy = false
+			return
+		end
+		pressKeyR()
+
+		-- Đợi 2s rồi tween lên platform set lại
+		task.wait(2)
+		autoResetBusy = false
+		if isAutoReset97 then
+			respawnTweenPending = false
+			goUpToPlatform()
+		end
+	end)
+end
+
+local function attachHp97Watcher(char)
+	if hpWatchConn then
+		hpWatchConn:Disconnect()
+		hpWatchConn = nil
+	end
+	if role ~= "alt" or not char then return end
+
+	local hum = char:WaitForChild("Humanoid", 10)
+	if not hum then return end
+
+	local firedForChar = false
+	hpWatchConn = hum.HealthChanged:Connect(function(newHp)
+		if firedForChar or not isAutoReset97 or autoResetBusy then return end
+		if math.abs(newHp - 97) < 0.01 then
+			firedForChar = true
+			triggerAutoReset97Flow(char)
+		end
+	end)
+end
+
+-- ==========================================
 -- THEO DÕI CHẾT & RESPAWN (TỰ TWEEN VỀ KHI CHẾT TRÊN ALT TOGGLE)
 -- ==========================================
 local function hookCharacter(char)
 	stopFreeze()
+	attachHp97Watcher(char)
 
 	local hum = char:WaitForChild("Humanoid", 10)
 	if hum then
@@ -460,7 +548,7 @@ local function hookCharacter(char)
 			stopFreeze()
 			setNoclip(false)
 
-			if role == "alt" and (not isButtonMode) and isActive and savedOriginCFrame then
+			if role == "alt" and (not isAutoReset97) and (not isButtonMode) and isActive and savedOriginCFrame then
 				respawnTweenPending = true
 			end
 		end)
@@ -474,7 +562,7 @@ end
 LocalPlayer.CharacterAdded:Connect(function(newChar)
 	hookCharacter(newChar)
 
-	if role == "alt" and (not isButtonMode) and isActive and respawnTweenPending and savedOriginCFrame then
+	if role == "alt" and (not isAutoReset97) and (not isButtonMode) and isActive and respawnTweenPending and savedOriginCFrame then
 		respawnTweenPending = false
 		local hrp = newChar:WaitForChild("HumanoidRootPart", 10)
 		local hum = newChar:WaitForChild("Humanoid", 10)
@@ -511,7 +599,7 @@ local function buildGui()
 
 	local frame = Instance.new("Frame")
 	frame.Name = "MainFrame"
-	frame.Size = UDim2.fromOffset(220, (role == "owner") and 146 or 112)
+	frame.Size = UDim2.fromOffset(220, 146)
 	frame.Position = UDim2.new(0.5, -110, 0.2, 0)
 	frame.BackgroundColor3 = Color3.fromRGB(28, 30, 36)
 	frame.BorderSizePixel = 0
@@ -640,6 +728,37 @@ local function buildGui()
 
 		setPlatBtn.MouseButton1Click:Connect(function()
 			setPointOnly()
+		end)
+	else
+		local reset97Btn = Instance.new("TextButton")
+		reset97Btn.Name = "AutoReset97Button"
+		reset97Btn.Size = UDim2.new(1, -16, 0, 28)
+		reset97Btn.Position = UDim2.fromOffset(8, 108)
+		reset97Btn.BackgroundColor3 = Color3.fromRGB(40, 43, 52)
+		reset97Btn.Text = "[ ] Reset HP=97 (7s->R->2s)"
+		reset97Btn.TextColor3 = Color3.fromRGB(225, 225, 225)
+		reset97Btn.Font = Enum.Font.GothamSemibold
+		reset97Btn.TextSize = 11
+		reset97Btn.Parent = frame
+
+		local resetCorner = Instance.new("UICorner")
+		resetCorner.CornerRadius = UDim.new(0, 6)
+		resetCorner.Parent = reset97Btn
+
+		reset97Btn.MouseButton1Click:Connect(function()
+			isAutoReset97 = not isAutoReset97
+			if isAutoReset97 then
+				respawnTweenPending = false
+				reset97Btn.Text = "[✓] Reset HP=97 (7s->R->2s)"
+				reset97Btn.BackgroundColor3 = Color3.fromRGB(145, 85, 40)
+				if LocalPlayer.Character then
+					attachHp97Watcher(LocalPlayer.Character)
+				end
+			else
+				autoResetBusy = false
+				reset97Btn.Text = "[ ] Reset HP=97 (7s->R->2s)"
+				reset97Btn.BackgroundColor3 = Color3.fromRGB(40, 43, 52)
+			end
 		end)
 	end
 

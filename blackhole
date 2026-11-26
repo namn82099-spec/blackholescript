@@ -300,7 +300,7 @@ local function castRay(origin, vec, char)
 	return isSolidHit(res) and res or nil
 end
 
-local function findFastDodgePos(currentPos, goalPos, hitRes, char, verticalOnly)
+local function findFastDodgePos(currentPos, goalPos, hitRes, char)
 	local delta = goalPos - currentPos
 	local horiz = Vector3.new(delta.X, 0, delta.Z)
 	local fH = (horiz.Magnitude > 0.05) and horiz.Unit or Vector3.new(0, 0, -1)
@@ -355,9 +355,10 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 	end
 
 	local completed, cancelled = false, false
+	local duration = math.max(distance / (customSpeed or TWEEN_SPEED), 0.02)
 	local tween = TweenService:Create(
 		hrp,
-		TweenInfo.new(math.max(distance / (customSpeed or TWEEN_SPEED), 0.02), Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
+		TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
 		{ CFrame = targetCFrame }
 	)
 	currentTween = tween
@@ -370,7 +371,14 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 	tween:Play()
 
 	local lastCheck = 0
+	local startClock = os.clock()
+	local maxWait = duration + 1.5
 	while not isUnloaded and not completed and not cancelled and activeTweenSequence and (tweenToken == myToken) do
+		if (os.clock() - startClock) > maxWait then
+			tween:Cancel()
+			return false, false
+		end
+
 		local c = LocalPlayer.Character
 		local r = getHrp(c)
 		local h = c and c:FindFirstChildOfClass("Humanoid")
@@ -399,7 +407,7 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 	return completed and activeTweenSequence and (tweenToken == myToken), false, nil
 end
 
-local function moveSmoothlyWithDodge(goalCFrame, startBaseY, allowClimbCheck, myToken, verticalOnly)
+local function moveSmoothlyWithDodge(goalCFrame, startBaseY, allowClimbCheck, myToken)
 	local dodgeAttempts = 0
 	while not isUnloaded and activeTweenSequence and (tweenToken == myToken) do
 		local c = LocalPlayer.Character
@@ -407,7 +415,6 @@ local function moveSmoothlyWithDodge(goalCFrame, startBaseY, allowClimbCheck, my
 		if not c or not r then return false end
 		if (r.Position - goalCFrame.Position).Magnitude <= 1.2 then return true end
 
-		-- Nếu né quá 4 lần ở khu dày part thì noclip thẳng qua đoạn này cho khỏi delay
 		if dodgeAttempts >= 4 then
 			setNoclip(true)
 			return tweenSingleSegment(goalCFrame, myToken, nil, TWEEN_SPEED)
@@ -423,7 +430,7 @@ local function moveSmoothlyWithDodge(goalCFrame, startBaseY, allowClimbCheck, my
 			local probeVec = (delta / dist) * math.min(dist, LOOK_AHEAD_STUDS)
 			local hit = castRay(currRoot.Position, probeVec, currChar)
 			if hit then
-				return findFastDodgePos(currRoot.Position, segGoal, hit, currChar, verticalOnly)
+				return findFastDodgePos(currRoot.Position, segGoal, hit, currChar)
 			end
 			return nil
 		end, TWEEN_SPEED)
@@ -444,17 +451,17 @@ local function moveSmoothlyWithDodge(goalCFrame, startBaseY, allowClimbCheck, my
 	return false
 end
 
-local function climbStraightToHeight(targetY, rotationCF, startBaseY, myToken)
-	while not isUnloaded and activeTweenSequence and (tweenToken == myToken) do
-		local c = LocalPlayer.Character
-		local r = getHrp(c)
-		if not c or not r then return false end
-		if r.Position.Y >= targetY - 0.5 then return true end
+-- Bay thẳng lên độ cao SKY_CLIMB_STUDS bằng noclip để không bị kẹt/khựng giữa chừng
+local function climbStraightToHeight(targetY, rotationCF, myToken)
+	if isUnloaded or not activeTweenSequence or tweenToken ~= myToken then return false end
+	local c = LocalPlayer.Character
+	local r = getHrp(c)
+	if not c or not r then return false end
+	if r.Position.Y >= targetY - 0.5 then return true end
 
-		local goalCF = CFrame.new(r.Position.X, targetY, r.Position.Z) * rotationCF
-		if not moveSmoothlyWithDodge(goalCF, startBaseY, true, myToken, true) then return false end
-	end
-	return false
+	setNoclip(true)
+	local goalCF = CFrame.new(r.Position.X, targetY, r.Position.Z) * rotationCF
+	return tweenSingleSegment(goalCF, myToken, nil, TWEEN_SPEED)
 end
 
 local function tweenViaSkyToTarget(targetCFrame, onComplete)
@@ -478,7 +485,7 @@ local function tweenViaSkyToTarget(targetCFrame, onComplete)
 		end
 
 		local startPos = hrp.Position
-		if not climbStraightToHeight(startPos.Y + SKY_CLIMB_STUDS, targetCFrame.Rotation, startPos.Y, myToken) then
+		if not climbStraightToHeight(startPos.Y + SKY_CLIMB_STUDS, targetCFrame.Rotation, myToken) then
 			if tweenToken == myToken then activeTweenSequence = false end
 			return
 		end
@@ -487,7 +494,7 @@ local function tweenViaSkyToTarget(targetCFrame, onComplete)
 		local curRoot = getHrp(LocalPlayer.Character)
 		local climbY = curRoot and curRoot.Position.Y or (startPos.Y + SKY_CLIMB_STUDS)
 		local aboveTargetCF = CFrame.new(targetCFrame.Position.X, climbY, targetCFrame.Position.Z) * targetCFrame.Rotation
-		if not moveSmoothlyWithDodge(aboveTargetCF, startPos.Y, false, myToken, false) then
+		if not moveSmoothlyWithDodge(aboveTargetCF, startPos.Y, false, myToken) then
 			if tweenToken == myToken then activeTweenSequence = false end
 			return
 		end

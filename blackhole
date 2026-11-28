@@ -357,7 +357,7 @@ local function stepDodgeObstacle(currentPos, goalPos, hitRes, char)
 end
 
 -- ==========================================
--- TWEEN MƯỢT KHÔNG GIẬT & NÉ VẬT CẢN DƯỚI 650 STUD
+-- DODGE TWEEN (TweenService) & NÉ VẬT CẢN DƯỚI 650 STUD
 -- ==========================================
 local function cancelActiveTween()
 	tweenToken += 1

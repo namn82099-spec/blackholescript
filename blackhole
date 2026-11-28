@@ -8,9 +8,11 @@ local FIXED_PLATFORM_POS = Vector3.new(0, 1000, 0)
 local PLATFORM_SIZE = Vector3.new(200, 2, 200)
 local PLATFORM_NAME = "SharedSkyPlatform_Client"
 local TWEEN_SPEED = 250
-local DODGE_SPEED = 190
+local DODGE_SPEED = 420
 local DODGE_HORIZONTAL_STUDS = 450
 local OVERHEAD_SCAN_STUDS = 220
+local SCAN_RATE_HZ = 200
+local SCAN_INTERVAL = 1 / SCAN_RATE_HZ
 local STAGE_1_CLIMB_STUDS = 400
 local SKY_CLIMB_STUDS = 700
 local M1_SPAM_INTERVAL = 0.08
@@ -444,6 +446,7 @@ local function tweenSingleSegment(targetPos, myToken, onStepCheck, customSpeed)
 	tween:Play()
 
 	local elapsed = 0
+	local scanAccum = SCAN_INTERVAL
 	while not completed and not isUnloaded and activeMoveSequence and (moveToken == myToken) do
 		local c = LocalPlayer.Character
 		local r = getHrp(c)
@@ -455,15 +458,23 @@ local function tweenSingleSegment(targetPos, myToken, onStepCheck, customSpeed)
 			return false, false
 		end
 
-		if onStepCheck and onStepCheck(c, r, targetPos) then
-			pcall(function() tween:Cancel() end)
-			doneConn:Disconnect()
-			if activeTween == tween then activeTween = nil end
-			zeroCharacterVelocity(c)
-			return false, true
+		if onStepCheck then
+			scanAccum += elapsed == 0 and SCAN_INTERVAL or 0
+			while scanAccum >= SCAN_INTERVAL do
+				scanAccum -= SCAN_INTERVAL
+				if onStepCheck(c, r, targetPos) then
+					pcall(function() tween:Cancel() end)
+					doneConn:Disconnect()
+					if activeTween == tween then activeTween = nil end
+					zeroCharacterVelocity(c)
+					return false, true
+				end
+			end
 		end
 
-		elapsed += RunService.Heartbeat:Wait()
+		local dt = RunService.Heartbeat:Wait()
+		elapsed += dt
+		scanAccum += dt
 		if elapsed > duration + 1.5 then
 			break
 		end

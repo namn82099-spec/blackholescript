@@ -9,8 +9,8 @@ local PLATFORM_NAME = "SharedSkyPlatform_Client"
 local TWEEN_SPEED = 250
 local DODGE_SPEED = 190
 local DODGE_HORIZONTAL_STUDS = 450
-local LOOK_AHEAD_STUDS = 28
-local STAGE_1_CLIMB_STUDS = 450
+local OVERHEAD_SCAN_STUDS = 100
+local STAGE_1_CLIMB_STUDS = 400
 local SKY_CLIMB_STUDS = 700
 local M1_SPAM_INTERVAL = 0.08
 
@@ -293,7 +293,7 @@ local function startFreezeAtCurrentSpot(hrp, overridePos)
 end
 
 -- ==========================================
--- QUÉT VẬT CẢN TRÊN ĐẦU (TỪ 450 STUD TRỞ ĐI) & NÉ NGANG RANDOM 450 STUD
+-- QUÉT 100 STUD TRÊN ĐẦU (TỪ 400 STUD TRỞ ĐI) & TÌM HƯỚNG NGANG KHÔNG VẬT CẢN
 -- ==========================================
 local cachedRayParams = nil
 local cachedRayChar = nil
@@ -322,20 +322,44 @@ local function isSolidHit(res)
 	return p:IsA("BasePart") and p.CanCollide and p.Transparency < 0.95
 end
 
-local function hasOverheadObstacle(currChar, currRoot, goalY)
-	local remY = goalY - currRoot.Position.Y
-	if remY <= 0.1 then return false end
-	local upVec = Vector3.new(0, math.min(remY, LOOK_AHEAD_STUDS), 0)
+local function hasOverheadObstacle100(currChar, currRoot)
+	local upVec = Vector3.new(0, OVERHEAD_SCAN_STUDS, 0)
 	local res = workspace:Raycast(currRoot.Position, upVec, getRayParams(currChar))
 	return isSolidHit(res)
 end
 
-local function getRandomHorizontalDodgePos(currentPos, dist)
-	local angle = math.random() * math.pi * 2
+local function isHorizontalPathClear(originPos, dirUnit, dist, char)
+	local params = getRayParams(char)
+	for _, yOffset in ipairs({ 0, 25, 50, 75, 100 }) do
+		local rayOrigin = Vector3.new(originPos.X, originPos.Y + yOffset, originPos.Z)
+		local res = workspace:Raycast(rayOrigin, dirUnit * dist, params)
+		if isSolidHit(res) then
+			return false
+		end
+	end
+	return true
+end
+
+local function findClearHorizontalDodgePos(currentPos, dist, char)
+	local startAngle = math.random() * math.pi * 2
+	local steps = 36
+	for i = 0, steps - 1 do
+		local angle = startAngle + (i / steps) * math.pi * 2
+		local dir = Vector3.new(math.cos(angle), 0, math.sin(angle)).Unit
+		if isHorizontalPathClear(currentPos, dir, dist, char) then
+			return Vector3.new(
+				currentPos.X + dir.X * dist,
+				currentPos.Y,
+				currentPos.Z + dir.Z * dist
+			)
+		end
+	end
+
+	local fallbackDir = Vector3.new(math.cos(startAngle), 0, math.sin(startAngle)).Unit
 	return Vector3.new(
-		currentPos.X + math.cos(angle) * dist,
+		currentPos.X + fallbackDir.X * dist,
 		currentPos.Y,
-		currentPos.Z + math.sin(angle) * dist
+		currentPos.Z + fallbackDir.Z * dist
 	)
 end
 
@@ -450,19 +474,19 @@ local function climbStraightSegment(targetY, myToken)
 	return false
 end
 
-local function climbToSkyWith450Scan(startBaseY, targetY, myToken)
-	local stage450Y = startBaseY + STAGE_1_CLIMB_STUDS
+local function climbToSkyWith400Scan(startBaseY, targetY, myToken)
+	local stage400Y = startBaseY + STAGE_1_CLIMB_STUDS
 
-	-- 1. Từ 0 đến 450 stud: bay thẳng lên, có vật cản cũng không né
-	if targetY > stage450Y then
+	-- 1. Từ 0 đến 400 stud: bay thẳng lên, không quét vật cản
+	if targetY > stage400Y then
 		while not isUnloaded and activeMoveSequence and (moveToken == myToken) do
 			local c = LocalPlayer.Character
 			local r = getHrp(c)
 			if not c or not r then return false end
-			if r.Position.Y >= stage450Y - 1.5 then break end
+			if r.Position.Y >= stage400Y - 1.5 then break end
 
-			local goal450Pos = Vector3.new(r.Position.X, stage450Y, r.Position.Z)
-			if not moveSingleSegment(goal450Pos, myToken, nil, TWEEN_SPEED) then
+			local goal400Pos = Vector3.new(r.Position.X, stage400Y, r.Position.Z)
+			if not moveSingleSegment(goal400Pos, myToken, nil, TWEEN_SPEED) then
 				return false
 			end
 		end
@@ -472,7 +496,7 @@ local function climbToSkyWith450Scan(startBaseY, targetY, myToken)
 
 	if isUnloaded or not activeMoveSequence or moveToken ~= myToken then return false end
 
-	-- 2. Từ 450 stud trở đi: quét liên tục vật cản trên đầu; có vật cản thì bay ngang random 450 stud rồi bay lên đủ 700 stud; không có thì cứ bay lên như cũ
+	-- 2. Từ 400 stud trở đi: quét liên tục 100 stud trên đầu; có vật cản thì tìm hướng ngang thoáng né 450 stud rồi bay lên đủ 700 stud; không có thì cứ bay lên như cũ
 	while not isUnloaded and activeMoveSequence and (moveToken == myToken) do
 		local c = LocalPlayer.Character
 		local r = getHrp(c)
@@ -482,8 +506,8 @@ local function climbToSkyWith450Scan(startBaseY, targetY, myToken)
 		local ok, hitObstacle = moveSingleSegment(
 			Vector3.new(r.Position.X, targetY, r.Position.Z),
 			myToken,
-			function(currChar, currRoot, segGoal)
-				return hasOverheadObstacle(currChar, currRoot, segGoal.Y)
+			function(currChar, currRoot)
+				return hasOverheadObstacle100(currChar, currRoot)
 			end,
 			TWEEN_SPEED
 		)
@@ -495,7 +519,7 @@ local function climbToSkyWith450Scan(startBaseY, targetY, myToken)
 		local rNow = getHrp(cNow)
 		if not cNow or not rNow then return false end
 
-		local dodgePos = getRandomHorizontalDodgePos(rNow.Position, DODGE_HORIZONTAL_STUDS)
+		local dodgePos = findClearHorizontalDodgePos(rNow.Position, DODGE_HORIZONTAL_STUDS, cNow)
 		if not moveSingleSegment(dodgePos, myToken, nil, DODGE_SPEED) then
 			return false
 		end
@@ -543,7 +567,7 @@ local function moveViaSkyToTarget(targetPos, onComplete)
 
 		local startPos = hrp.Position
 		local skyGoalY = math.max(startPos.Y + SKY_CLIMB_STUDS, targetPos.Y)
-		if not climbToSkyWith450Scan(startPos.Y, skyGoalY, myToken) then
+		if not climbToSkyWith400Scan(startPos.Y, skyGoalY, myToken) then
 			cleanupFail()
 			return
 		end

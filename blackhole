@@ -58,12 +58,14 @@ end
 local customSetPoint = nil
 local savedOriginCFrame = nil
 local refreshActionButtonText = nil
+local refreshReset97ButtonText = nil
 local setPlatformFeedback = nil
 local activeGui = nil
 local triggerAutoUpdate = nil
+local attachHp97Watcher = nil
 
 -- ==========================================
--- LƯU & ĐỌC TỐC ĐỘ (TWEEN_SPEED & DODGE_SPEED)
+-- LƯU & ĐỌC TỐC ĐỘ CHO ALT (TWEEN_SPEED & DODGE_SPEED)
 -- ==========================================
 local memorySpeedConfig = {
 	tweenSpeed = TWEEN_SPEED,
@@ -75,6 +77,7 @@ local function canUseFileApi()
 end
 
 local function loadSavedSpeeds()
+	if role ~= "alt" then return end
 	local loadedT = memorySpeedConfig.tweenSpeed
 	local loadedD = memorySpeedConfig.dodgeSpeed
 
@@ -105,6 +108,7 @@ local function loadSavedSpeeds()
 end
 
 local function saveSpeeds()
+	if role ~= "alt" then return end
 	memorySpeedConfig.tweenSpeed = TWEEN_SPEED
 	memorySpeedConfig.dodgeSpeed = DODGE_SPEED
 	if canUseFileApi() then
@@ -121,7 +125,7 @@ end
 loadSavedSpeeds()
 
 -- ==========================================
--- CHỐNG TAG & GỬI CHAT AN TOÀN
+-- CHỐNG TAG & GỬI CHAT AN TOÀN (CHỈ ALT DÙNG PHẢN HỒI LỆNH)
 -- ==========================================
 local function antiTagText(text)
 	if typeof(text) ~= "string" then return "" end
@@ -129,6 +133,8 @@ local function antiTagText(text)
 	cleaned = cleaned
 		:gsub("tspeed", "t_speed")
 		:gsub("dspeed", "d_speed")
+		:gsub("ena_lowreset", "ena lowreset")
+		:gsub("lowreset", "low_reset")
 		:gsub("cmd_ta", "cmd ta")
 		:gsub("cmd_tv", "cmd tv")
 		:gsub("reset", "re_set")
@@ -156,6 +162,7 @@ local function sendRawChat(message)
 end
 
 local function sendAntiTagChat(rawText)
+	if role ~= "alt" then return end
 	sendRawChat(antiTagText(rawText))
 end
 
@@ -789,7 +796,7 @@ local function goBackToOrigin()
 end
 
 -- ==========================================
--- RESET & ẤN R (6.5S CHO LỆNH $re, 7S CHO AUTO RESET HP <= 97)
+-- RESET & ẤN R (CHỈ ALT: 6.5S CHO LỆNH $re, 7S CHO AUTO RESET HP <= 97)
 -- ==========================================
 local function pressKeyR()
 	if isUnloaded then return end
@@ -832,7 +839,7 @@ local function triggerManualResetByCommand()
 		forceResetCharacter(LocalPlayer.Character)
 
 		task.wait(6.5)
-		if isUnloaded then autoResetBusy = false; return end
+		if isUnloaded or role ~= "alt" then autoResetBusy = false; return end
 		pressKeyR()
 		autoResetBusy = false
 	end)
@@ -846,19 +853,19 @@ local function triggerAutoReset97Flow(char)
 		forceResetCharacter(char)
 
 		task.wait(7)
-		if isUnloaded or not isAutoReset97 then autoResetBusy = false; return end
+		if isUnloaded or role ~= "alt" or not isAutoReset97 then autoResetBusy = false; return end
 		pressKeyR()
 
 		task.wait(2)
 		autoResetBusy = false
-		if not isUnloaded and isAutoReset97 then
+		if not isUnloaded and role == "alt" and isAutoReset97 then
 			respawnMovePending = false
 			goUpToPlatform()
 		end
 	end)
 end
 
-local function attachHp97Watcher(char)
+attachHp97Watcher = function(char)
 	if hpWatchConn then hpWatchConn:Disconnect(); hpWatchConn = nil end
 	if isUnloaded or role ~= "alt" or not char then return end
 
@@ -878,8 +885,21 @@ local function attachHp97Watcher(char)
 	hpWatchConn = hum.HealthChanged:Connect(checkHp)
 end
 
+local function setLowResetEnabled(enabled)
+	if isUnloaded or role ~= "alt" then return end
+	isAutoReset97 = enabled and true or false
+	if isAutoReset97 then
+		respawnMovePending = false
+		if refreshReset97ButtonText then refreshReset97ButtonText() end
+		if LocalPlayer.Character then attachHp97Watcher(LocalPlayer.Character) end
+	else
+		autoResetBusy = false
+		if refreshReset97ButtonText then refreshReset97ButtonText() end
+	end
+end
+
 -- ==========================================
--- ĐỒNG BỘ ĐIỂM SET & LỆNH CHAT ($re, $tspeed, $dspeed, $go, $upd, $cmd_ta, $cmd_tv)
+-- ĐỒNG BỘ ĐIỂM SET & LỆNH CHAT CHO ALT ($re, $tspeed, $dspeed, $go, $upd, $ena_lowreset, $cmd_ta, $cmd_tv)
 -- ==========================================
 local SYNC_PREFIX = "__SKYPLAT_POINT__:"
 
@@ -894,15 +914,16 @@ local function parseSyncMessage(msg)
 end
 
 local function sendSyncChat(vec3)
-	if isUnloaded then return end
+	if isUnloaded or role ~= "owner" then return end
 	local payload = string.format("%s%.2f,%.2f,%.2f", SYNC_PREFIX, vec3.X, vec3.Y, vec3.Z)
 	sendRawChat(payload)
 end
 
 local function announceCommandsEN()
+	if role ~= "alt" then return end
 	local lines = {
-		"Commands: re (alt reset + 6.5s press R), tspeed{num} (set tween speed + save), dspeed{num} (set dodge speed + save)",
-		"More commands: go (tween to set plat with obstacle dodge), upd (alt auto update), cmd_ta (EN list), cmd_tv (VI list)"
+		"Commands: re (reset + 6.5s R), tspeed{num} (tween speed + save), dspeed{num} (dodge speed + save), ena_lowreset (HP<=97 reset 7s R 2s tween)",
+		"More commands: go (tween to set plat with dodge), upd (auto update), cmd_ta (EN list), cmd_tv (VI list)"
 	}
 	for _, line in ipairs(lines) do
 		sendAntiTagChat(line)
@@ -911,9 +932,10 @@ local function announceCommandsEN()
 end
 
 local function announceCommandsVI()
+	if role ~= "alt" then return end
 	local lines = {
-		"Lenh: re (alt tu reset + doi 6.5s an R), tspeed{so} (doi tween speed + luu), dspeed{so} (doi dodge speed + luu)",
-		"Them lenh: go (bay len diem set co ne vat can), upd (alt tu update), cmd_ta (danh sach tieng Anh), cmd_tv (danh sach tieng Viet)"
+		"Lenh: re (reset + 6.5s an R), tspeed{so} (tween speed + luu), dspeed{so} (dodge speed + luu), ena_lowreset (HP<=97 reset 7s R 2s tween)",
+		"Them lenh: go (bay len diem set co ne), upd (tu update), cmd_ta (danh sach tieng Anh), cmd_tv (danh sach tieng Viet)"
 	}
 	for _, line in ipairs(lines) do
 		sendAntiTagChat(line)
@@ -922,14 +944,13 @@ local function announceCommandsVI()
 end
 
 local function handleOwnerChatCommand(rawMsg)
-	if isUnloaded or typeof(rawMsg) ~= "string" then return end
+	if isUnloaded or role ~= "alt" or typeof(rawMsg) ~= "string" then return end
 	local msg = rawMsg:match("^%s*(.-)%s*$") or ""
 	local lower = string.lower(msg)
 
 	if lower == "$re" then
-		if role == "alt" then
-			triggerManualResetByCommand()
-		end
+		sendAntiTagChat("Resetting and waiting 6.5s before pressing R")
+		triggerManualResetByCommand()
 		return
 	end
 
@@ -939,9 +960,9 @@ local function handleOwnerChatCommand(rawMsg)
 		if num and num > 0 then
 			TWEEN_SPEED = num
 			saveSpeeds()
-			if role == "alt" then
-				sendAntiTagChat(string.format("Tween speed set to %g and saved", TWEEN_SPEED))
-			end
+			sendAntiTagChat(string.format("Tween speed set to %g and saved", TWEEN_SPEED))
+		else
+			sendAntiTagChat("Invalid tween speed value")
 		end
 		return
 	end
@@ -952,10 +973,16 @@ local function handleOwnerChatCommand(rawMsg)
 		if num and num > 0 then
 			DODGE_SPEED = num
 			saveSpeeds()
-			if role == "alt" then
-				sendAntiTagChat(string.format("Dodge speed set to %g and saved", DODGE_SPEED))
-			end
+			sendAntiTagChat(string.format("Dodge speed set to %g and saved", DODGE_SPEED))
+		else
+			sendAntiTagChat("Invalid dodge speed value")
 		end
+		return
+	end
+
+	if lower == "$ena_lowreset" then
+		setLowResetEnabled(true)
+		sendAntiTagChat("Low HP reset enabled: HP <= 97 resets, waits 7s presses R, waits 2s tweens up")
 		return
 	end
 
@@ -966,55 +993,53 @@ local function handleOwnerChatCommand(rawMsg)
 			isActive = true
 			if refreshActionButtonText then refreshActionButtonText() end
 		end
+		sendAntiTagChat("Moving to set platform with obstacle dodge")
 		goUpToPlatform()
 		return
 	end
 
 	if lower == "$upd" then
-		if role == "alt" and triggerAutoUpdate then
+		sendAntiTagChat("Updating script now")
+		if triggerAutoUpdate then
 			triggerAutoUpdate(nil)
 		end
 		return
 	end
 
 	if lower == "$cmd_ta" then
-		if role == "alt" then
-			task.spawn(announceCommandsEN)
-		end
+		task.spawn(announceCommandsEN)
 		return
 	end
 
 	if lower == "$cmd_tv" then
-		if role == "alt" then
-			task.spawn(announceCommandsVI)
-		end
+		task.spawn(announceCommandsVI)
 		return
 	end
 
-	if role == "alt" then
-		local pos = parseSyncMessage(msg)
-		if pos then
-			customSetPoint = pos
-		end
+	local pos = parseSyncMessage(msg)
+	if pos then
+		customSetPoint = pos
 	end
 end
 
-pcall(function()
-	trackConn(TextChatService.MessageReceived:Connect(function(msg)
+if role == "alt" then
+	pcall(function()
+		trackConn(TextChatService.MessageReceived:Connect(function(msg)
+			if isUnloaded then return end
+			local sender = msg.TextSource and Players:GetPlayerByUserId(msg.TextSource.UserId)
+			if sender and sender.Name == OwnerName then
+				handleOwnerChatCommand(msg.Text)
+			end
+		end))
+	end)
+
+	trackConn(Players.PlayerChatted:Connect(function(_, sender, message)
 		if isUnloaded then return end
-		local sender = msg.TextSource and Players:GetPlayerByUserId(msg.TextSource.UserId)
 		if sender and sender.Name == OwnerName then
-			handleOwnerChatCommand(msg.Text)
+			handleOwnerChatCommand(message)
 		end
 	end))
-end)
-
-trackConn(Players.PlayerChatted:Connect(function(_, sender, message)
-	if isUnloaded then return end
-	if sender and sender.Name == OwnerName then
-		handleOwnerChatCommand(message)
-	end
-end))
+end
 
 local function setPointOnly()
 	if isUnloaded or role ~= "owner" then return end
@@ -1110,7 +1135,7 @@ local function unloadScript()
 	local existingGui = playerGui and playerGui:FindFirstChild("SkyPlatformControlGui")
 	if existingGui then pcall(function() existingGui:Destroy() end) end
 
-	customSetPoint, savedOriginCFrame, refreshActionButtonText, setPlatformFeedback = nil, nil, nil, nil
+	customSetPoint, savedOriginCFrame, refreshActionButtonText, refreshReset97ButtonText, setPlatformFeedback = nil, nil, nil, nil, nil
 end
 
 local function fetchNoCacheRaw(url)
@@ -1304,19 +1329,21 @@ local function buildGui()
 		end)
 	else
 		local reset97Btn = createButton(frame, "AutoReset97Button", UDim2.new(1, -16, 0, 28), UDim2.fromOffset(8, 108), Color3.fromRGB(40, 43, 52), "[ ] Reset HP<=97 (7s->R->2s)", Enum.Font.GothamSemibold, 11)
-		reset97Btn.MouseButton1Click:Connect(function()
-			if isUnloaded then return end
-			isAutoReset97 = not isAutoReset97
+
+		refreshReset97ButtonText = function()
+			if isUnloaded or not reset97Btn or not reset97Btn.Parent then return end
 			if isAutoReset97 then
-				respawnMovePending = false
 				reset97Btn.Text = "[✓] Reset HP<=97 (7s->R->2s)"
 				reset97Btn.BackgroundColor3 = Color3.fromRGB(145, 85, 40)
-				if LocalPlayer.Character then attachHp97Watcher(LocalPlayer.Character) end
 			else
-				autoResetBusy = false
 				reset97Btn.Text = "[ ] Reset HP<=97 (7s->R->2s)"
 				reset97Btn.BackgroundColor3 = Color3.fromRGB(40, 43, 52)
 			end
+		end
+
+		reset97Btn.MouseButton1Click:Connect(function()
+			if isUnloaded then return end
+			setLowResetEnabled(not isAutoReset97)
 		end)
 	end
 
@@ -1332,6 +1359,7 @@ local function buildGui()
 	unloadBtn.MouseButton1Click:Connect(unloadScript)
 
 	refreshActionButtonText()
+	refreshReset97ButtonText()
 end
 
 buildGui()

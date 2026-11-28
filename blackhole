@@ -32,7 +32,6 @@ local isAutoReset97 = false
 local isKillFarm = false
 local activeTween = nil
 local activeMoveSequence = false
-local noclipConn = nil
 local freezeRenderConn = nil
 local freezeHeartConn = nil
 local hpWatchConn = nil
@@ -88,6 +87,21 @@ local function clearMovers(hrp)
 	end
 end
 
+local function resetAnimateScript(char)
+	if not char then return end
+	local animScript = char:FindFirstChild("Animate")
+	if animScript and animScript:IsA("LocalScript") then
+		pcall(function()
+			animScript.Disabled = true
+			task.defer(function()
+				if animScript and animScript.Parent then
+					animScript.Disabled = false
+				end
+			end)
+		end)
+	end
+end
+
 local function restoreCharacterState(char)
 	if not char then return end
 	local hrp = getHrp(char)
@@ -96,18 +110,13 @@ local function restoreCharacterState(char)
 		hrp.Anchored = false
 	end
 
-	for _, obj in ipairs(char:GetDescendants()) do
-		if obj:IsA("BasePart") and obj.Name ~= "HumanoidRootPart" then
-			obj.CanCollide = true
-		end
-	end
-
 	zeroCharacterVelocity(char)
 
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	if hum and hum:GetState() ~= Enum.HumanoidStateType.Dead then
 		hum.Sit = false
 		hum.PlatformStand = false
+		hum.AutoRotate = true
 		pcall(function()
 			hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
 			hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
@@ -124,6 +133,7 @@ local function restoreCharacterState(char)
 				end
 			end)
 		end)
+		resetAnimateScript(char)
 	end
 end
 
@@ -226,30 +236,8 @@ local function setPointOnly()
 end
 
 -- ==========================================
--- NOCLIP & FREEZE
+-- FREEZE
 -- ==========================================
-local function setNoclip(enabled)
-	if noclipConn then
-		noclipConn:Disconnect()
-		noclipConn = nil
-	end
-
-	if enabled and not isUnloaded then
-		noclipConn = RunService.Stepped:Connect(function()
-			if isUnloaded or not LocalPlayer.Character then return end
-			for _, obj in ipairs(LocalPlayer.Character:GetDescendants()) do
-				if obj:IsA("BasePart") then obj.CanCollide = false end
-			end
-		end)
-	elseif LocalPlayer.Character then
-		for _, obj in ipairs(LocalPlayer.Character:GetDescendants()) do
-			if obj:IsA("BasePart") and obj.Name ~= "HumanoidRootPart" then
-				obj.CanCollide = true
-			end
-		end
-	end
-end
-
 local function stopFreeze()
 	if freezeRenderConn then freezeRenderConn:Disconnect(); freezeRenderConn = nil end
 	if freezeHeartConn then freezeHeartConn:Disconnect(); freezeHeartConn = nil end
@@ -340,7 +328,7 @@ end
 local function isBlockingPart(part)
 	if not part or not part:IsA("BasePart") then return false end
 	if part.Name == PLATFORM_NAME then return false end
-	return part.Transparency < 0.98
+	return true
 end
 
 local function rayHitsObstacle(origin, dirVec, char)
@@ -353,10 +341,14 @@ local function hasOverheadObstacle100(currChar, currRoot)
 	local upVec = Vector3.new(0, OVERHEAD_SCAN_STUDS, 0)
 	local offsets = {
 		Vector3.zero,
-		Vector3.new(6, 0, 0),
-		Vector3.new(-6, 0, 0),
-		Vector3.new(0, 0, 6),
-		Vector3.new(0, 0, -6),
+		Vector3.new(10, 0, 0),
+		Vector3.new(-10, 0, 0),
+		Vector3.new(0, 0, 10),
+		Vector3.new(0, 0, -10),
+		Vector3.new(7, 0, 7),
+		Vector3.new(-7, 0, 7),
+		Vector3.new(7, 0, -7),
+		Vector3.new(-7, 0, -7),
 	}
 
 	for _, off in ipairs(offsets) do
@@ -369,7 +361,7 @@ local function hasOverheadObstacle100(currChar, currRoot)
 end
 
 local function isHorizontalPathClear(originPos, dirUnit, dist, char)
-	for _, yOffset in ipairs({ 0, 35, 70, 100 }) do
+	for _, yOffset in ipairs({ -5, 0, 20, 40, 60, 80, 100 }) do
 		local rayOrigin = Vector3.new(originPos.X, originPos.Y + yOffset, originPos.Z)
 		if rayHitsObstacle(rayOrigin, dirUnit * dist, char) then
 			return false
@@ -380,7 +372,7 @@ end
 
 local function findClearHorizontalDodgePos(currentPos, dist, char)
 	local startAngle = math.random() * math.pi * 2
-	local steps = 48
+	local steps = 64
 	for i = 0, steps - 1 do
 		local angle = startAngle + (i / steps) * math.pi * 2
 		local dir = Vector3.new(math.cos(angle), 0, math.sin(angle)).Unit
@@ -402,7 +394,7 @@ local function findClearHorizontalDodgePos(currentPos, dist, char)
 end
 
 -- ==========================================
--- DI CHUYỂN BẰNG TWEEN (MƯỢT, KHÔNG NẰM, KHÔNG LẬT)
+-- DI CHUYỂN BẰNG TWEEN
 -- ==========================================
 local function cancelActiveMove()
 	moveToken += 1
@@ -464,7 +456,7 @@ local function tweenSingleSegment(targetPos, myToken, onStepCheck, customSpeed)
 			return false, false
 		end
 
-		if onStepCheck and (os.clock() - lastCheck) >= 0.03 then
+		if onStepCheck and (os.clock() - lastCheck) >= 0.02 then
 			lastCheck = os.clock()
 			if onStepCheck(c, r, targetPos) then
 				pcall(function() tween:Cancel() end)
@@ -534,7 +526,7 @@ local function climbToSkyWith400Scan(startBaseY, targetY, myToken)
 
 	if isUnloaded or not activeMoveSequence or moveToken ~= myToken then return false end
 
-	-- 2. Từ 400 stud trở đi: quét liên tục 100 stud trên đầu; có vật cản thì tìm hướng ngang thoáng né 450 stud rồi bay lên đủ 700 stud; không có thì cứ bay lên như cũ
+	-- 2. Từ 400 stud trở đi: quét liên tục 100 stud trên đầu; có vật cản thì tìm hướng ngang thoáng né 450 stud rồi bay lên tiếp
 	while not isUnloaded and activeMoveSequence and (moveToken == myToken) do
 		local c = LocalPlayer.Character
 		local r = getHrp(c)
@@ -562,11 +554,10 @@ local function climbToSkyWith400Scan(startBaseY, targetY, myToken)
 			return false
 		end
 
-		local full700Y = math.max(targetY, startBaseY + SKY_CLIMB_STUDS)
-		if not climbStraightSegment(full700Y, myToken) then
+		local nextClimbY = math.max(targetY, rNow.Position.Y + (SKY_CLIMB_STUDS - STAGE_1_CLIMB_STUDS))
+		if not climbStraightSegment(nextClimbY, myToken) then
 			return false
 		end
-		return true
 	end
 
 	return false
@@ -580,7 +571,6 @@ local function moveViaSkyToTarget(targetPos, onComplete)
 
 	cancelActiveMove()
 	stopFreeze()
-	setNoclip(true)
 
 	local myToken = moveToken
 	activeMoveSequence = true
@@ -588,7 +578,6 @@ local function moveViaSkyToTarget(targetPos, onComplete)
 	task.spawn(function()
 		local function cleanupFail()
 			if moveToken == myToken then activeMoveSequence = false end
-			setNoclip(false)
 			restoreCharacterState(LocalPlayer.Character)
 		end
 
@@ -710,12 +699,10 @@ local function toggleKillFarm(enabled)
 
 	moveViaSkyToTarget(getTargetStandPos(), function(finalChar, root, landedPos)
 		if isUnloaded or role ~= "owner" or not isKillFarm then
-			setNoclip(false)
 			return
 		end
 		startFreezeAtCurrentSpot(root, landedPos)
 		zeroCharacterVelocity(finalChar)
-		setNoclip(false)
 		startKillFarmLoop()
 	end)
 end
@@ -734,7 +721,6 @@ local function goUpToPlatform()
 	moveViaSkyToTarget(getTargetStandPos(), function(finalChar, root, landedPos)
 		if role == "alt" then startFreezeAtCurrentSpot(root, landedPos) end
 		zeroCharacterVelocity(finalChar)
-		setNoclip(false)
 	end)
 end
 
@@ -749,7 +735,6 @@ local function goBackToOrigin()
 
 	moveViaSkyToTarget(backPos, function(finalChar)
 		zeroCharacterVelocity(finalChar)
-		setNoclip(false)
 		savedOriginCFrame = nil
 	end)
 end
@@ -779,7 +764,6 @@ local function forceResetCharacter(char)
 	if not char then return end
 	cancelActiveMove()
 	stopFreeze()
-	setNoclip(false)
 
 	local hum = char:FindFirstChildOfClass("Humanoid")
 	pcall(function()
@@ -846,7 +830,6 @@ local function hookCharacter(char)
 			stopKillFarm(false)
 			cancelActiveMove()
 			stopFreeze()
-			setNoclip(false)
 
 			if role == "alt" and (not isAutoReset97) and (not isButtonMode) and isActive and savedOriginCFrame then
 				respawnMovePending = true
@@ -875,7 +858,6 @@ trackConn(LocalPlayer.CharacterAdded:Connect(function(newChar)
 			if isUnloaded then return end
 			moveViaSkyToTarget(savedOriginCFrame.Position, function(finalChar)
 				zeroCharacterVelocity(finalChar)
-				setNoclip(false)
 				savedOriginCFrame = nil
 			end)
 		end
@@ -899,7 +881,6 @@ local function unloadScript()
 
 	cancelActiveMove()
 	stopFreeze()
-	setNoclip(false)
 	restoreCharacterState(LocalPlayer.Character)
 
 	if hpWatchConn then hpWatchConn:Disconnect(); hpWatchConn = nil end

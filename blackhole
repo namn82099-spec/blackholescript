@@ -3,12 +3,17 @@
 -- ==========================================
 local OwnerName = "tinhtrungcovij"
 local SCRIPT_RAW_URL = "https://raw.githubusercontent.com/namn82099-spec/blackholescript/refs/heads/main/blackhole"
+local SETTINGS_FILE = "SkyPlatform_SpeedConfig.json"
 
 local FIXED_PLATFORM_POS = Vector3.new(0, 1000, 0)
 local PLATFORM_SIZE = Vector3.new(200, 2, 200)
 local PLATFORM_NAME = "SharedSkyPlatform_Client"
-local TWEEN_SPEED = 250
-local DODGE_SPEED = 420
+
+local DEFAULT_TWEEN_SPEED = 200
+local DEFAULT_DODGE_SPEED = 370
+local TWEEN_SPEED = DEFAULT_TWEEN_SPEED
+local DODGE_SPEED = DEFAULT_DODGE_SPEED
+
 local DODGE_HORIZONTAL_STUDS = 450
 local OVERHEAD_SCAN_STUDS = 220
 local SCAN_RATE_HZ = 200
@@ -22,6 +27,7 @@ local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local TextChatService = game:GetService("TextChatService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local HttpService = game:GetService("HttpService")
 
 local LocalPlayer = Players.LocalPlayer
 local role = (LocalPlayer.Name == OwnerName) and "owner" or "alt"
@@ -55,6 +61,106 @@ local refreshActionButtonText = nil
 local setPlatformFeedback = nil
 local activeGui = nil
 
+-- ==========================================
+-- LƯU & ĐỌC TỐC ĐỘ (TWEEN_SPEED & DODGE_SPEED)
+-- ==========================================
+local memorySpeedConfig = {
+	tweenSpeed = TWEEN_SPEED,
+	dodgeSpeed = DODGE_SPEED,
+}
+
+local function canUseFileApi()
+	return typeof(writefile) == "function" and typeof(readfile) == "function" and typeof(isfile) == "function"
+end
+
+local function loadSavedSpeeds()
+	local loadedT = memorySpeedConfig.tweenSpeed
+	local loadedD = memorySpeedConfig.dodgeSpeed
+
+	if canUseFileApi() then
+		local okExists, exists = pcall(isfile, SETTINGS_FILE)
+		if okExists and exists then
+			local okRead, raw = pcall(readfile, SETTINGS_FILE)
+			if okRead and typeof(raw) == "string" and #raw > 0 then
+				local okDecode, data = pcall(function()
+					return HttpService:JSONDecode(raw)
+				end)
+				if okDecode and typeof(data) == "table" then
+					if tonumber(data.tweenSpeed) and tonumber(data.tweenSpeed) > 0 then
+						loadedT = tonumber(data.tweenSpeed)
+					end
+					if tonumber(data.dodgeSpeed) and tonumber(data.dodgeSpeed) > 0 then
+						loadedD = tonumber(data.dodgeSpeed)
+					end
+				end
+			end
+		end
+	end
+
+	TWEEN_SPEED = loadedT
+	DODGE_SPEED = loadedD
+	memorySpeedConfig.tweenSpeed = TWEEN_SPEED
+	memorySpeedConfig.dodgeSpeed = DODGE_SPEED
+end
+
+local function saveSpeeds()
+	memorySpeedConfig.tweenSpeed = TWEEN_SPEED
+	memorySpeedConfig.dodgeSpeed = DODGE_SPEED
+	if canUseFileApi() then
+		pcall(function()
+			local encoded = HttpService:JSONEncode({
+				tweenSpeed = TWEEN_SPEED,
+				dodgeSpeed = DODGE_SPEED,
+			})
+			writefile(SETTINGS_FILE, encoded)
+		end)
+	end
+end
+
+loadSavedSpeeds()
+
+-- ==========================================
+-- CHỐNG TAG & GỬI CHAT AN TOÀN
+-- ==========================================
+local function antiTagText(text)
+	if typeof(text) ~= "string" then return "" end
+	local cleaned = text:gsub("[%$#]", "")
+	cleaned = cleaned
+		:gsub("tspeed", "t_speed")
+		:gsub("dspeed", "d_speed")
+		:gsub("cmd_ta", "cmd ta")
+		:gsub("cmd_tv", "cmd tv")
+		:gsub("reset", "re_set")
+		:gsub("platform", "plat_form")
+	return cleaned
+end
+
+local function sendRawChat(message)
+	if isUnloaded or typeof(message) ~= "string" or #message == 0 then return end
+	pcall(function()
+		if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+			local general = TextChatService:FindFirstChild("TextChannels")
+				and (TextChatService.TextChannels:FindFirstChild("RBXGeneral") or TextChatService.TextChannels:GetChildren()[1])
+			if general and general:IsA("TextChannel") then
+				general:SendAsync(message)
+				return
+			end
+		end
+	end)
+	pcall(function()
+		local chatEvents = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+		local sayMsg = chatEvents and chatEvents:FindFirstChild("SayMessageRequest")
+		if sayMsg then sayMsg:FireServer(message, "All") end
+	end)
+end
+
+local function sendAntiTagChat(rawText)
+	sendRawChat(antiTagText(rawText))
+end
+
+-- ==========================================
+-- TRẠNG THÁI NHÂN VẬT & ANIMATION
+-- ==========================================
 local function getHrp(char)
 	return char and char:FindFirstChild("HumanoidRootPart")
 end
@@ -171,71 +277,6 @@ local function initInitialPlatform()
 end
 
 initInitialPlatform()
-
--- ==========================================
--- ĐỒNG BỘ ĐIỂM SET QUA CHAT (__SKYPLAT_POINT__)
--- ==========================================
-local SYNC_PREFIX = "__SKYPLAT_POINT__:"
-
-local function parseSyncMessage(msg)
-	if typeof(msg) ~= "string" then return nil end
-	local idx = string.find(msg, SYNC_PREFIX, 1, true)
-	if not idx then return nil end
-	local body = string.sub(msg, idx + #SYNC_PREFIX)
-	local x, y, z = string.match(body, "^%s*([%-+%d%.]+)%s*,%s*([%-+%d%.]+)%s*,%s*([%-+%d%.]+)%s*")
-	local nx, ny, nz = tonumber(x), tonumber(y), tonumber(z)
-	return (nx and ny and nz) and Vector3.new(nx, ny, nz) or nil
-end
-
-local function sendSyncChat(vec3)
-	if isUnloaded then return end
-	local payload = string.format("%s%.2f,%.2f,%.2f", SYNC_PREFIX, vec3.X, vec3.Y, vec3.Z)
-	pcall(function()
-		if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-			local general = TextChatService:FindFirstChild("TextChannels")
-				and (TextChatService.TextChannels:FindFirstChild("RBXGeneral") or TextChatService.TextChannels:GetChildren()[1])
-			if general and general:IsA("TextChannel") then
-				general:SendAsync(payload)
-				return
-			end
-		end
-	end)
-	pcall(function()
-		local chatEvents = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
-		local sayMsg = chatEvents and chatEvents:FindFirstChild("SayMessageRequest")
-		if sayMsg then sayMsg:FireServer(payload, "All") end
-	end)
-end
-
-if role == "alt" then
-	pcall(function()
-		trackConn(TextChatService.MessageReceived:Connect(function(msg)
-			if isUnloaded then return end
-			local sender = msg.TextSource and Players:GetPlayerByUserId(msg.TextSource.UserId)
-			if sender and sender.Name == OwnerName then
-				local pos = parseSyncMessage(msg.Text)
-				if pos then customSetPoint = pos end
-			end
-		end))
-	end)
-
-	trackConn(Players.PlayerChatted:Connect(function(_, sender, message)
-		if isUnloaded then return end
-		if sender and sender.Name == OwnerName then
-			local pos = parseSyncMessage(message)
-			if pos then customSetPoint = pos end
-		end
-	end))
-end
-
-local function setPointOnly()
-	if isUnloaded or role ~= "owner" then return end
-	local char = LocalPlayer.Character
-	if not isAliveChar(char) then return end
-	customSetPoint = getHrp(char).Position
-	if setPlatformFeedback then setPlatformFeedback(customSetPoint) end
-	sendSyncChat(customSetPoint)
-end
 
 -- ==========================================
 -- FREEZE
@@ -747,7 +788,7 @@ local function goBackToOrigin()
 end
 
 -- ==========================================
--- AUTO RESET KHI HP <= 97 -> ĐỢI 7S ẤN R -> ĐỢI 2S BAY LÊN PLATFORM SET
+-- RESET & ẤN R (6.5S CHO LỆNH $re, 7S CHO AUTO RESET HP <= 97)
 -- ==========================================
 local function pressKeyR()
 	if isUnloaded then return end
@@ -780,6 +821,20 @@ local function forceResetCharacter(char)
 		end
 	end)
 	pcall(function() char:BreakJoints() end)
+end
+
+local function triggerManualResetByCommand()
+	if isUnloaded or role ~= "alt" or autoResetBusy then return end
+	autoResetBusy = true
+
+	task.spawn(function()
+		forceResetCharacter(LocalPlayer.Character)
+
+		task.wait(6.5)
+		if isUnloaded then autoResetBusy = false; return end
+		pressKeyR()
+		autoResetBusy = false
+	end)
 end
 
 local function triggerAutoReset97Flow(char)
@@ -820,6 +875,146 @@ local function attachHp97Watcher(char)
 
 	checkHp(hum.Health)
 	hpWatchConn = hum.HealthChanged:Connect(checkHp)
+end
+
+-- ==========================================
+-- ĐỒNG BỘ ĐIỂM SET & LỆNH CHAT ($re, $tspeed, $dspeed, $go, $cmd_ta, $cmd_tv)
+-- ==========================================
+local SYNC_PREFIX = "__SKYPLAT_POINT__:"
+
+local function parseSyncMessage(msg)
+	if typeof(msg) ~= "string" then return nil end
+	local idx = string.find(msg, SYNC_PREFIX, 1, true)
+	if not idx then return nil end
+	local body = string.sub(msg, idx + #SYNC_PREFIX)
+	local x, y, z = string.match(body, "^%s*([%-+%d%.]+)%s*,%s*([%-+%d%.]+)%s*,%s*([%-+%d%.]+)%s*")
+	local nx, ny, nz = tonumber(x), tonumber(y), tonumber(z)
+	return (nx and ny and nz) and Vector3.new(nx, ny, nz) or nil
+end
+
+local function sendSyncChat(vec3)
+	if isUnloaded then return end
+	local payload = string.format("%s%.2f,%.2f,%.2f", SYNC_PREFIX, vec3.X, vec3.Y, vec3.Z)
+	sendRawChat(payload)
+end
+
+local function announceCommandsEN()
+	local lines = {
+		"Commands: re (alt reset + 6.5s press R), tspeed{num} (set tween speed + save), dspeed{num} (set dodge speed + save)",
+		"More commands: go (tween to set plat with obstacle dodge), cmd_ta (EN list), cmd_tv (VI list)"
+	}
+	for _, line in ipairs(lines) do
+		sendAntiTagChat(line)
+		task.wait(0.25)
+	end
+end
+
+local function announceCommandsVI()
+	local lines = {
+		"Lenh: re (alt tu reset + doi 6.5s an R), tspeed{so} (doi tween speed + luu), dspeed{so} (doi dodge speed + luu)",
+		"Them lenh: go (bay len diem set co ne vat can), cmd_ta (danh sach tieng Anh), cmd_tv (danh sach tieng Viet)"
+	}
+	for _, line in ipairs(lines) do
+		sendAntiTagChat(line)
+		task.wait(0.25)
+	end
+end
+
+local function handleOwnerChatCommand(rawMsg)
+	if isUnloaded or typeof(rawMsg) ~= "string" then return end
+	local msg = rawMsg:match("^%s*(.-)%s*$") or ""
+	local lower = string.lower(msg)
+
+	if lower == "$re" then
+		if role == "alt" then
+			triggerManualResetByCommand()
+		end
+		return
+	end
+
+	local tValStr = lower:match("^%$tspeed%s*([%d%.]+)$")
+	if tValStr then
+		local num = tonumber(tValStr)
+		if num and num > 0 then
+			TWEEN_SPEED = num
+			saveSpeeds()
+			if role == "alt" then
+				sendAntiTagChat(string.format("Tween speed set to %g and saved", TWEEN_SPEED))
+			end
+		end
+		return
+	end
+
+	local dValStr = lower:match("^%$dspeed%s*([%d%.]+)$")
+	if dValStr then
+		local num = tonumber(dValStr)
+		if num and num > 0 then
+			DODGE_SPEED = num
+			saveSpeeds()
+			if role == "alt" then
+				sendAntiTagChat(string.format("Dodge speed set to %g and saved", DODGE_SPEED))
+			end
+		end
+		return
+	end
+
+	if lower == "$go" then
+		stopKillFarm(true)
+		respawnMovePending = false
+		if not isButtonMode then
+			isActive = true
+			if refreshActionButtonText then refreshActionButtonText() end
+		end
+		goUpToPlatform()
+		return
+	end
+
+	if lower == "$cmd_ta" then
+		if role == "alt" then
+			task.spawn(announceCommandsEN)
+		end
+		return
+	end
+
+	if lower == "$cmd_tv" then
+		if role == "alt" then
+			task.spawn(announceCommandsVI)
+		end
+		return
+	end
+
+	if role == "alt" then
+		local pos = parseSyncMessage(msg)
+		if pos then
+			customSetPoint = pos
+		end
+	end
+end
+
+pcall(function()
+	trackConn(TextChatService.MessageReceived:Connect(function(msg)
+		if isUnloaded then return end
+		local sender = msg.TextSource and Players:GetPlayerByUserId(msg.TextSource.UserId)
+		if sender and sender.Name == OwnerName then
+			handleOwnerChatCommand(msg.Text)
+		end
+	end))
+end)
+
+trackConn(Players.PlayerChatted:Connect(function(_, sender, message)
+	if isUnloaded then return end
+	if sender and sender.Name == OwnerName then
+		handleOwnerChatCommand(message)
+	end
+end))
+
+local function setPointOnly()
+	if isUnloaded or role ~= "owner" then return end
+	local char = LocalPlayer.Character
+	if not isAliveChar(char) then return end
+	customSetPoint = getHrp(char).Position
+	if setPlatformFeedback then setPlatformFeedback(customSetPoint) end
+	sendSyncChat(customSetPoint)
 end
 
 -- ==========================================

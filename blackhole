@@ -6,12 +6,13 @@ local OwnerName = "tinhtrungcovij"
 local FIXED_PLATFORM_POS = Vector3.new(0, 1000, 0)
 local PLATFORM_SIZE = Vector3.new(200, 2, 200)
 local PLATFORM_NAME = "SharedSkyPlatform_Client"
-local TWEEN_SPEED = 240
-local DODGE_SPEED = 180
+local TWEEN_SPEED = 210
+local DODGE_SPEED = 150
 local DODGE_MARGIN = 24
 local LOOK_AHEAD_STUDS = 28
 local SKY_CLIMB_STUDS = 700
 local OBSTACLE_CHECK_MAX_CLIMB_STUDS = 650
+local M1_SPAM_INTERVAL = 0.08
 
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
@@ -26,12 +27,14 @@ local isUnloaded = false
 local isActive = false
 local isButtonMode = false
 local isAutoReset97 = false
+local isKillFarm = false
 local activeTweenSequence = false
 local currentTween = nil
 local noclipConn = nil
 local freezeRenderConn = nil
 local freezeHeartConn = nil
 local hpWatchConn = nil
+local killFarmThread = nil
 local frozenCFrame = nil
 local respawnTweenPending = false
 local autoResetBusy = false
@@ -561,6 +564,80 @@ local function getTargetStandCFrame()
 end
 
 -- ==========================================
+-- KILL FARM (OWNER): TWEEN NÉ VẬT CẢN -> FREEZE -> SPAM M1 CLIENTSIDE
+-- ==========================================
+local function stopKillFarm(unfreeze)
+	isKillFarm = false
+	killFarmThread = nil
+	if unfreeze ~= false then
+		stopFreeze()
+	end
+end
+
+local function fireClientM1()
+	local mouse = LocalPlayer:GetMouse()
+	local x = (mouse and mouse.X and mouse.X > 0) and mouse.X or 500
+	local y = (mouse and mouse.Y and mouse.Y > 0) and mouse.Y or 500
+
+	pcall(function()
+		VirtualInputManager:SendMouseButtonEvent(x, y, 0, true, game, 1)
+		task.wait(0.015)
+		VirtualInputManager:SendMouseButtonEvent(x, y, 0, false, game, 1)
+	end)
+	pcall(function()
+		if typeof(mouse1click) == "function" then
+			mouse1click()
+		elseif typeof(mouse1press) == "function" and typeof(mouse1release) == "function" then
+			mouse1press()
+			task.wait(0.015)
+			mouse1release()
+		end
+	end)
+end
+
+local function startKillFarmLoop()
+	if killFarmThread then return end
+	killFarmThread = task.spawn(function()
+		while not isUnloaded and role == "owner" and isKillFarm do
+			local c = LocalPlayer.Character
+			if isAliveChar(c) then
+				fireClientM1()
+			end
+			task.wait(M1_SPAM_INTERVAL)
+		end
+		killFarmThread = nil
+	end)
+end
+
+local function toggleKillFarm(enabled)
+	if isUnloaded or role ~= "owner" then return end
+	if not enabled then
+		stopKillFarm(true)
+		return
+	end
+
+	local char = LocalPlayer.Character
+	local hrp = getHrp(char)
+	if not isAliveChar(char) or not hrp then return end
+
+	isKillFarm = true
+	respawnTweenPending = false
+	isActive = false
+	if refreshActionButtonText then refreshActionButtonText() end
+
+	tweenViaSkyToTarget(getTargetStandCFrame(), function(finalChar, root, landedCF)
+		if isUnloaded or role ~= "owner" or not isKillFarm then
+			setNoclip(false)
+			return
+		end
+		startFreezeAtCurrentSpot(root, landedCF)
+		zeroCharacterVelocity(finalChar)
+		setNoclip(false)
+		startKillFarmLoop()
+	end)
+end
+
+-- ==========================================
 -- HÀNH ĐỘNG LÊN ĐIỂM / TWEEN VỀ VỊ TRÍ CŨ
 -- ==========================================
 local function goUpToPlatform()
@@ -682,6 +759,7 @@ local function hookCharacter(char)
 	if not isUnloaded and hum then
 		hum.Died:Connect(function()
 			if isUnloaded then return end
+			stopKillFarm(false)
 			cancelActiveTween()
 			stopFreeze()
 			setNoclip(false)
@@ -728,6 +806,8 @@ local function unloadScript()
 	isUnloaded = true
 	isActive = false
 	isAutoReset97 = false
+	isKillFarm = false
+	killFarmThread = nil
 	autoResetBusy = false
 	respawnTweenPending = false
 	cachedRayParams = nil
@@ -790,9 +870,10 @@ local function buildGui()
 	screenGui.Parent = playerGui
 	activeGui = screenGui
 
+	local isOwner = (role == "owner")
 	local frame = Instance.new("Frame")
 	frame.Name = "MainFrame"
-	frame.Size = UDim2.fromOffset(220, 180)
+	frame.Size = UDim2.fromOffset(220, isOwner and 212 or 180)
 	frame.Position = UDim2.new(0.5, -110, 0.2, 0)
 	frame.BackgroundColor3 = Color3.fromRGB(28, 30, 36)
 	frame.BorderSizePixel = 0
@@ -808,8 +889,8 @@ local function buildGui()
 	title.Size = UDim2.new(1, -16, 0, 22)
 	title.Position = UDim2.fromOffset(8, 6)
 	title.BackgroundTransparency = 1
-	title.Text = (role == "owner") and "panel owner" or "panel alt"
-	title.TextColor3 = (role == "owner") and Color3.fromRGB(100, 210, 255) or Color3.fromRGB(255, 190, 80)
+	title.Text = isOwner and "panel owner" or "panel alt"
+	title.TextColor3 = isOwner and Color3.fromRGB(100, 210, 255) or Color3.fromRGB(255, 190, 80)
 	title.Font = Enum.Font.GothamBold
 	title.TextSize = 13
 	title.TextXAlignment = Enum.TextXAlignment.Left
@@ -833,6 +914,7 @@ local function buildGui()
 
 	actionBtn.MouseButton1Click:Connect(function()
 		if isUnloaded then return end
+		stopKillFarm(true)
 		respawnTweenPending = false
 		if isButtonMode then
 			goUpToPlatform()
@@ -853,7 +935,7 @@ local function buildGui()
 		refreshActionButtonText()
 	end)
 
-	if role == "owner" then
+	if isOwner then
 		local setPlatBtn = createButton(frame, "SetPlatformButton", UDim2.new(1, -16, 0, 28), UDim2.fromOffset(8, 108), Color3.fromRGB(85, 65, 145), "SET PLATFORM", Enum.Font.GothamBold, 11)
 		local feedbackToken = 0
 
@@ -872,6 +954,15 @@ local function buildGui()
 		end
 
 		setPlatBtn.MouseButton1Click:Connect(setPointOnly)
+
+		local killFarmBtn = createButton(frame, "KillFarmButton", UDim2.new(1, -16, 0, 28), UDim2.fromOffset(8, 142), Color3.fromRGB(40, 43, 52), "[ ] Kill Farm", Enum.Font.GothamSemibold, 12)
+		killFarmBtn.MouseButton1Click:Connect(function()
+			if isUnloaded then return end
+			local nextState = not isKillFarm
+			killFarmBtn.Text = nextState and "[✓] Kill Farm" or "[ ] Kill Farm"
+			killFarmBtn.BackgroundColor3 = nextState and Color3.fromRGB(165, 65, 55) or Color3.fromRGB(40, 43, 52)
+			toggleKillFarm(nextState)
+		end)
 	else
 		local reset97Btn = createButton(frame, "AutoReset97Button", UDim2.new(1, -16, 0, 28), UDim2.fromOffset(8, 108), Color3.fromRGB(40, 43, 52), "[ ] Reset HP<=97 (7s->R->2s)", Enum.Font.GothamSemibold, 11)
 		reset97Btn.MouseButton1Click:Connect(function()
@@ -890,7 +981,7 @@ local function buildGui()
 		end)
 	end
 
-	local unloadBtn = createButton(frame, "UnloadButton", UDim2.new(1, -16, 0, 26), UDim2.fromOffset(8, 144), Color3.fromRGB(120, 35, 45), "UNLOAD", Enum.Font.GothamBold, 11)
+	local unloadBtn = createButton(frame, "UnloadButton", UDim2.new(1, -16, 0, 26), UDim2.fromOffset(8, isOwner and 176 or 144), Color3.fromRGB(120, 35, 45), "UNLOAD", Enum.Font.GothamBold, 11)
 	unloadBtn.TextColor3 = Color3.fromRGB(255, 230, 230)
 	unloadBtn.MouseButton1Click:Connect(unloadScript)
 

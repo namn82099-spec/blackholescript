@@ -10,7 +10,7 @@ local PLATFORM_NAME = "SharedSkyPlatform_Client"
 local TWEEN_SPEED = 250
 local DODGE_SPEED = 190
 local DODGE_HORIZONTAL_STUDS = 450
-local OVERHEAD_SCAN_STUDS = 100
+local OVERHEAD_SCAN_STUDS = 220
 local STAGE_1_CLIMB_STUDS = 400
 local SKY_CLIMB_STUDS = 700
 local M1_SPAM_INTERVAL = 0.08
@@ -302,7 +302,7 @@ local function startFreezeAtCurrentSpot(hrp, overridePos)
 end
 
 -- ==========================================
--- QUÉT 100 STUD TRÊN ĐẦU (TỪ 400 STUD TRỞ ĐI) & TÌM HƯỚNG NGANG KHÔNG VẬT CẢN
+-- QUÉT SỚM TRÊN ĐẦU (TỪ 400 STUD TRỞ ĐI) & TÌM HƯỚNG NGANG KHÔNG VẬT CẢN
 -- ==========================================
 local cachedRayParams = nil
 local cachedRayChar = nil
@@ -336,19 +336,19 @@ local function rayHitsObstacle(origin, dirVec, char)
 	return res and isBlockingPart(res.Instance) or false
 end
 
-local function hasOverheadObstacle100(currChar, currRoot)
+local function hasOverheadObstacleEarly(currChar, currRoot)
 	local base = currRoot.Position
 	local upVec = Vector3.new(0, OVERHEAD_SCAN_STUDS, 0)
 	local offsets = {
 		Vector3.zero,
-		Vector3.new(10, 0, 0),
-		Vector3.new(-10, 0, 0),
-		Vector3.new(0, 0, 10),
-		Vector3.new(0, 0, -10),
-		Vector3.new(7, 0, 7),
-		Vector3.new(-7, 0, 7),
-		Vector3.new(7, 0, -7),
-		Vector3.new(-7, 0, -7),
+		Vector3.new(14, 0, 0),
+		Vector3.new(-14, 0, 0),
+		Vector3.new(0, 0, 14),
+		Vector3.new(0, 0, -14),
+		Vector3.new(10, 0, 10),
+		Vector3.new(-10, 0, 10),
+		Vector3.new(10, 0, -10),
+		Vector3.new(-10, 0, -10),
 	}
 
 	for _, off in ipairs(offsets) do
@@ -361,7 +361,7 @@ local function hasOverheadObstacle100(currChar, currRoot)
 end
 
 local function isHorizontalPathClear(originPos, dirUnit, dist, char)
-	for _, yOffset in ipairs({ -5, 0, 20, 40, 60, 80, 100 }) do
+	for _, yOffset in ipairs({ -8, 0, 25, 50, 75, 100 }) do
 		local rayOrigin = Vector3.new(originPos.X, originPos.Y + yOffset, originPos.Z)
 		if rayHitsObstacle(rayOrigin, dirUnit * dist, char) then
 			return false
@@ -444,7 +444,6 @@ local function tweenSingleSegment(targetPos, myToken, onStepCheck, customSpeed)
 	tween:Play()
 
 	local elapsed = 0
-	local lastCheck = 0
 	while not completed and not isUnloaded and activeMoveSequence and (moveToken == myToken) do
 		local c = LocalPlayer.Character
 		local r = getHrp(c)
@@ -456,15 +455,12 @@ local function tweenSingleSegment(targetPos, myToken, onStepCheck, customSpeed)
 			return false, false
 		end
 
-		if onStepCheck and (os.clock() - lastCheck) >= 0.02 then
-			lastCheck = os.clock()
-			if onStepCheck(c, r, targetPos) then
-				pcall(function() tween:Cancel() end)
-				doneConn:Disconnect()
-				if activeTween == tween then activeTween = nil end
-				zeroCharacterVelocity(c)
-				return false, true
-			end
+		if onStepCheck and onStepCheck(c, r, targetPos) then
+			pcall(function() tween:Cancel() end)
+			doneConn:Disconnect()
+			if activeTween == tween then activeTween = nil end
+			zeroCharacterVelocity(c)
+			return false, true
 		end
 
 		elapsed += RunService.Heartbeat:Wait()
@@ -526,7 +522,7 @@ local function climbToSkyWith400Scan(startBaseY, targetY, myToken)
 
 	if isUnloaded or not activeMoveSequence or moveToken ~= myToken then return false end
 
-	-- 2. Từ 400 stud trở đi: quét liên tục 100 stud trên đầu; có vật cản thì tìm hướng ngang thoáng né 450 stud rồi bay lên tiếp
+	-- 2. Từ 400 stud trở đi: quét sớm trên đầu; có vật cản thì tìm hướng ngang thoáng né 450 stud rồi bay lên tiếp
 	while not isUnloaded and activeMoveSequence and (moveToken == myToken) do
 		local c = LocalPlayer.Character
 		local r = getHrp(c)
@@ -537,7 +533,7 @@ local function climbToSkyWith400Scan(startBaseY, targetY, myToken)
 			Vector3.new(r.Position.X, targetY, r.Position.Z),
 			myToken,
 			function(currChar, currRoot)
-				return hasOverheadObstacle100(currChar, currRoot)
+				return hasOverheadObstacleEarly(currChar, currRoot)
 			end,
 			TWEEN_SPEED
 		)

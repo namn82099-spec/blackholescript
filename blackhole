@@ -1,7 +1,8 @@
 -- ==========================================
--- CẤU HÌNH CHỦ NHÂN & PLATFORM
+-- CẤU HÌNH CHỦ NHÂN, PLATFORM & UPDATE
 -- ==========================================
 local OwnerName = "tinhtrungcovij"
+local SCRIPT_RAW_URL = "https://raw.githubusercontent.com/namn82099-spec/blackholescript/refs/heads/main/blackhole"
 
 local FIXED_PLATFORM_POS = Vector3.new(0, 1000, 0)
 local PLATFORM_SIZE = Vector3.new(200, 2, 200)
@@ -23,6 +24,7 @@ local LocalPlayer = Players.LocalPlayer
 local role = (LocalPlayer.Name == OwnerName) and "owner" or "alt"
 
 local isUnloaded = false
+local isUpdating = false
 local isActive = false
 local isButtonMode = false
 local isAutoReset97 = false
@@ -81,6 +83,45 @@ local function clearMovers(hrp)
 		if child.Name == "SkyMoveAlign" or child.Name == "SkyMoveAttachment" or child:IsA("BodyMover") or child:IsA("LinearVelocity") or child:IsA("AngularVelocity") or child:IsA("VectorForce") or child:IsA("AlignPosition") or child:IsA("AlignOrientation") then
 			child:Destroy()
 		end
+	end
+end
+
+local function restoreCharacterState(char)
+	if not char then return end
+	local hrp = getHrp(char)
+	if hrp and hrp:IsA("BasePart") then
+		clearMovers(hrp)
+		hrp.Anchored = false
+	end
+
+	for _, obj in ipairs(char:GetDescendants()) do
+		if obj:IsA("BasePart") and obj.Name ~= "HumanoidRootPart" then
+			obj.CanCollide = true
+		end
+	end
+
+	zeroCharacterVelocity(char)
+
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hum and hum:GetState() ~= Enum.HumanoidStateType.Dead then
+		hum.Sit = false
+		hum.PlatformStand = false
+		pcall(function()
+			hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+			hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+			hum:SetStateEnabled(Enum.HumanoidStateType.GettingUp, true)
+			hum:SetStateEnabled(Enum.HumanoidStateType.Running, true)
+			hum:SetStateEnabled(Enum.HumanoidStateType.RunningNoPhysics, true)
+			hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+			hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
+			hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
+			hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+			task.defer(function()
+				if hum and hum.Parent and hum:GetState() ~= Enum.HumanoidStateType.Dead then
+					hum:ChangeState(Enum.HumanoidStateType.Running)
+				end
+			end)
+		end)
 	end
 end
 
@@ -316,24 +357,41 @@ local function getRayParams(char)
 	return params
 end
 
-local function isSolidHit(res)
-	if not res or not res.Instance then return false end
-	local p = res.Instance
-	return p:IsA("BasePart") and p.CanCollide and p.Transparency < 0.95
+local function isBlockingPart(part)
+	if not part or not part:IsA("BasePart") then return false end
+	if part.Name == PLATFORM_NAME then return false end
+	return part.Transparency < 0.98
+end
+
+local function rayHitsObstacle(origin, dirVec, char)
+	local res = workspace:Raycast(origin, dirVec, getRayParams(char))
+	return res and isBlockingPart(res.Instance) or false
 end
 
 local function hasOverheadObstacle100(currChar, currRoot)
+	local base = currRoot.Position
 	local upVec = Vector3.new(0, OVERHEAD_SCAN_STUDS, 0)
-	local res = workspace:Raycast(currRoot.Position, upVec, getRayParams(currChar))
-	return isSolidHit(res)
+	local offsets = {
+		Vector3.zero,
+		Vector3.new(6, 0, 0),
+		Vector3.new(-6, 0, 0),
+		Vector3.new(0, 0, 6),
+		Vector3.new(0, 0, -6),
+	}
+
+	for _, off in ipairs(offsets) do
+		if rayHitsObstacle(base + off, upVec, currChar) then
+			return true
+		end
+	end
+
+	return false
 end
 
 local function isHorizontalPathClear(originPos, dirUnit, dist, char)
-	local params = getRayParams(char)
-	for _, yOffset in ipairs({ 0, 25, 50, 75, 100 }) do
+	for _, yOffset in ipairs({ 0, 35, 70, 100 }) do
 		local rayOrigin = Vector3.new(originPos.X, originPos.Y + yOffset, originPos.Z)
-		local res = workspace:Raycast(rayOrigin, dirUnit * dist, params)
-		if isSolidHit(res) then
+		if rayHitsObstacle(rayOrigin, dirUnit * dist, char) then
 			return false
 		end
 	end
@@ -342,7 +400,7 @@ end
 
 local function findClearHorizontalDodgePos(currentPos, dist, char)
 	local startAngle = math.random() * math.pi * 2
-	local steps = 36
+	local steps = 48
 	for i = 0, steps - 1 do
 		local angle = startAngle + (i / steps) * math.pi * 2
 		local dir = Vector3.new(math.cos(angle), 0, math.sin(angle)).Unit
@@ -388,7 +446,7 @@ local function createMoveAlign(hrp, targetPos, speed)
 	align.Position = targetPos
 	align.MaxForce = 1e6
 	align.MaxVelocity = speed
-	align.Responsiveness = 45
+	align.Responsiveness = 65
 	align.Parent = hrp
 
 	return align, att
@@ -426,6 +484,15 @@ local function moveSingleSegment(targetPos, myToken, onStepCheck, customSpeed)
 			return false, false
 		end
 
+		if onStepCheck and (os.clock() - lastCheck) >= 0.03 then
+			lastCheck = os.clock()
+			if onStepCheck(c, r, targetPos) then
+				clearMovers(r)
+				zeroCharacterVelocity(c)
+				return false, true
+			end
+		end
+
 		if align.Parent ~= r then
 			align, att = createMoveAlign(r, targetPos, speed)
 		else
@@ -437,14 +504,6 @@ local function moveSingleSegment(targetPos, myToken, onStepCheck, customSpeed)
 			zeroCharacterVelocity(c)
 			clearMovers(r)
 			return true, false
-		end
-
-		if onStepCheck and (os.clock() - lastCheck) >= 0.05 then
-			lastCheck = os.clock()
-			if onStepCheck(c, r, targetPos) then
-				clearMovers(r)
-				return false, true
-			end
 		end
 
 		if (os.clock() - startClock) >= maxWait then
@@ -848,7 +907,7 @@ trackConn(LocalPlayer.CharacterAdded:Connect(function(newChar)
 end))
 
 -- ==========================================
--- UNLOAD TOÀN BỘ SCRIPT, PLATFORM, GUI
+-- UNLOAD & TỰ ĐỘNG CHECK + UPDATE TỪ GITHUB
 -- ==========================================
 local function unloadScript()
 	if isUnloaded then return end
@@ -865,6 +924,7 @@ local function unloadScript()
 	cancelActiveMove()
 	stopFreeze()
 	setNoclip(false)
+	restoreCharacterState(LocalPlayer.Character)
 
 	if hpWatchConn then hpWatchConn:Disconnect(); hpWatchConn = nil end
 	for _, conn in ipairs(connections) do pcall(function() conn:Disconnect() end) end
@@ -884,6 +944,69 @@ local function unloadScript()
 	if existingGui then pcall(function() existingGui:Destroy() end) end
 
 	customSetPoint, savedOriginPos, refreshActionButtonText, setPlatformFeedback = nil, nil, nil, nil
+end
+
+local function fetchNoCacheRaw(url)
+	local sep = string.find(url, "?", 1, true) and "&" or "?"
+	local cacheBustUrl = url .. sep .. "t=" .. tostring(os.time()) .. "_" .. tostring(math.random(1000, 9999))
+	return game:HttpGet(cacheBustUrl, true)
+end
+
+local function triggerAutoUpdate(updateBtn)
+	if isUnloaded or isUpdating then return end
+	isUpdating = true
+
+	local oldText = updateBtn and updateBtn.Text or "UPDATE"
+	local oldColor = updateBtn and updateBtn.BackgroundColor3 or Color3.fromRGB(35, 115, 165)
+
+	local function setBtnState(txt, col)
+		if updateBtn and updateBtn.Parent then
+			updateBtn.Text = txt
+			if col then updateBtn.BackgroundColor3 = col end
+		end
+	end
+
+	setBtnState("CHECKING...", Color3.fromRGB(165, 125, 35))
+
+	task.spawn(function()
+		local okFetch, rawCode = pcall(function()
+			return fetchNoCacheRaw(SCRIPT_RAW_URL)
+		end)
+
+		if not okFetch or typeof(rawCode) ~= "string" or #rawCode == 0 then
+			isUpdating = false
+			setBtnState("FETCH FAIL", Color3.fromRGB(165, 45, 55))
+			task.delay(1.8, function()
+				if not isUnloaded and not isUpdating then
+					setBtnState(oldText, oldColor)
+				end
+			end)
+			return
+		end
+
+		setBtnState("UPDATING...", Color3.fromRGB(35, 135, 185))
+
+		local compiledFn, compileErr = loadstring(rawCode)
+		if not compiledFn then
+			isUpdating = false
+			warn("[SkyPlatform Update] Compile error:", compileErr)
+			setBtnState("SYNTAX ERR", Color3.fromRGB(165, 45, 55))
+			task.delay(2, function()
+				if not isUnloaded and not isUpdating then
+					setBtnState(oldText, oldColor)
+				end
+			end)
+			return
+		end
+
+		unloadScript()
+		task.wait(0.05)
+
+		local okRun, runErr = pcall(compiledFn)
+		if not okRun then
+			warn("[SkyPlatform Update] Runtime error:", runErr)
+		end
+	end)
 end
 
 -- ==========================================
@@ -922,7 +1045,7 @@ local function buildGui()
 	local isOwner = (role == "owner")
 	local frame = Instance.new("Frame")
 	frame.Name = "MainFrame"
-	frame.Size = UDim2.fromOffset(220, isOwner and 212 or 180)
+	frame.Size = UDim2.fromOffset(220, isOwner and 244 or 212)
 	frame.Position = UDim2.new(0.5, -110, 0.2, 0)
 	frame.BackgroundColor3 = Color3.fromRGB(28, 30, 36)
 	frame.BorderSizePixel = 0
@@ -1030,7 +1153,14 @@ local function buildGui()
 		end)
 	end
 
-	local unloadBtn = createButton(frame, "UnloadButton", UDim2.new(1, -16, 0, 26), UDim2.fromOffset(8, isOwner and 176 or 144), Color3.fromRGB(120, 35, 45), "UNLOAD", Enum.Font.GothamBold, 11)
+	local bottomY = isOwner and 176 or 144
+	local updateBtn = createButton(frame, "UpdateButton", UDim2.new(1, -16, 0, 26), UDim2.fromOffset(8, bottomY), Color3.fromRGB(35, 115, 165), "UPDATE", Enum.Font.GothamBold, 11)
+	updateBtn.TextColor3 = Color3.fromRGB(230, 245, 255)
+	updateBtn.MouseButton1Click:Connect(function()
+		triggerAutoUpdate(updateBtn)
+	end)
+
+	local unloadBtn = createButton(frame, "UnloadButton", UDim2.new(1, -16, 0, 26), UDim2.fromOffset(8, bottomY + 32), Color3.fromRGB(120, 35, 45), "UNLOAD", Enum.Font.GothamBold, 11)
 	unloadBtn.TextColor3 = Color3.fromRGB(255, 230, 230)
 	unloadBtn.MouseButton1Click:Connect(unloadScript)
 

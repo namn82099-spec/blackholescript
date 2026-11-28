@@ -16,6 +16,7 @@ local SKY_CLIMB_STUDS = 700
 local M1_SPAM_INTERVAL = 0.08
 
 local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local TextChatService = game:GetService("TextChatService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
@@ -29,13 +30,14 @@ local isActive = false
 local isButtonMode = false
 local isAutoReset97 = false
 local isKillFarm = false
+local activeTween = nil
 local activeMoveSequence = false
 local noclipConn = nil
 local freezeRenderConn = nil
 local freezeHeartConn = nil
 local hpWatchConn = nil
 local killFarmThread = nil
-local frozenPos = nil
+local frozenCFrame = nil
 local respawnMovePending = false
 local autoResetBusy = false
 local moveToken = 0
@@ -47,7 +49,7 @@ local function trackConn(conn)
 end
 
 local customSetPoint = nil
-local savedOriginPos = nil
+local savedOriginCFrame = nil
 local refreshActionButtonText = nil
 local setPlatformFeedback = nil
 local activeGui = nil
@@ -122,29 +124,6 @@ local function restoreCharacterState(char)
 				end
 			end)
 		end)
-	end
-end
-
-local function setMovePhysicsLock(char, hrp, locked)
-	if not char then return end
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if hum then
-		hum.Sit = false
-		hum.PlatformStand = false
-		pcall(function()
-			if locked then
-				hum:ChangeState(Enum.HumanoidStateType.Physics)
-			elseif hum:GetState() ~= Enum.HumanoidStateType.Dead then
-				hum:ChangeState(Enum.HumanoidStateType.Running)
-			end
-		end)
-	end
-	if hrp then
-		hrp.Anchored = false
-		zeroCharacterVelocity(char)
-		if locked then
-			clearMovers(hrp)
-		end
 	end
 end
 
@@ -247,7 +226,7 @@ local function setPointOnly()
 end
 
 -- ==========================================
--- NOCLIP & FREEZE (KHÔNG DÙNG CFRAME)
+-- NOCLIP & FREEZE
 -- ==========================================
 local function setNoclip(enabled)
 	if noclipConn then
@@ -274,7 +253,7 @@ end
 local function stopFreeze()
 	if freezeRenderConn then freezeRenderConn:Disconnect(); freezeRenderConn = nil end
 	if freezeHeartConn then freezeHeartConn:Disconnect(); freezeHeartConn = nil end
-	frozenPos = nil
+	frozenCFrame = nil
 
 	local char = LocalPlayer.Character
 	if char then
@@ -296,7 +275,7 @@ local function lockRootInPlace()
 	local char = LocalPlayer.Character
 	local hrp = getHrp(char)
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
-	if not hrp or not frozenPos then return end
+	if not hrp or not frozenCFrame then return end
 
 	if hum then
 		hum.PlatformStand = false
@@ -310,8 +289,8 @@ local function lockRootInPlace()
 	hrp.Anchored = true
 	zeroCharacterVelocity(char)
 
-	if (hrp.Position - frozenPos).Magnitude > 0.05 then
-		hrp.Position = frozenPos
+	if (hrp.Position - frozenCFrame.Position).Magnitude > 0.05 then
+		hrp.CFrame = frozenCFrame
 	end
 end
 
@@ -319,16 +298,17 @@ local function startFreezeAtCurrentSpot(hrp, overridePos)
 	stopFreeze()
 	if isUnloaded or not hrp or not hrp.Parent then return end
 
-	frozenPos = overridePos or hrp.Position
+	local basePos = overridePos or hrp.Position
+	frozenCFrame = CFrame.lookAt(basePos, basePos + hrp.CFrame.LookVector)
 	lockRootInPlace()
 
 	freezeRenderConn = RunService.RenderStepped:Connect(function()
-		if isUnloaded or not frozenPos then stopFreeze(); return end
+		if isUnloaded or not frozenCFrame then stopFreeze(); return end
 		lockRootInPlace()
 	end)
 
 	freezeHeartConn = RunService.Heartbeat:Connect(function()
-		if isUnloaded or not frozenPos then stopFreeze(); return end
+		if isUnloaded or not frozenCFrame then stopFreeze(); return end
 		lockRootInPlace()
 	end)
 end
@@ -422,100 +402,99 @@ local function findClearHorizontalDodgePos(currentPos, dist, char)
 end
 
 -- ==========================================
--- DI CHUYỂN BẰNG ALIGNPOSITION (KHÔNG DÙNG CFRAME)
+-- DI CHUYỂN BẰNG TWEEN (MƯỢT, KHÔNG NẰM, KHÔNG LẬT)
 -- ==========================================
 local function cancelActiveMove()
 	moveToken += 1
 	activeMoveSequence = false
+	if activeTween then
+		pcall(function() activeTween:Cancel() end)
+		activeTween = nil
+	end
 	local hrp = getHrp(LocalPlayer.Character)
 	if hrp then clearMovers(hrp) end
 end
 
-local function createMoveAlign(hrp, targetPos, speed)
-	clearMovers(hrp)
-
-	local att = Instance.new("Attachment")
-	att.Name = "SkyMoveAttachment"
-	att.Position = Vector3.zero
-	att.Parent = hrp
-
-	local align = Instance.new("AlignPosition")
-	align.Name = "SkyMoveAlign"
-	align.Mode = Enum.PositionAlignmentMode.OneAttachment
-	align.Attachment0 = att
-	align.Position = targetPos
-	align.MaxForce = 1e6
-	align.MaxVelocity = speed
-	align.Responsiveness = 65
-	align.Parent = hrp
-
-	return align, att
-end
-
-local function moveSingleSegment(targetPos, myToken, onStepCheck, customSpeed)
+local function tweenSingleSegment(targetPos, myToken, onStepCheck, customSpeed)
 	if isUnloaded or not activeMoveSequence or moveToken ~= myToken then return false, false end
 	local char = LocalPlayer.Character
 	local hrp = getHrp(char)
-	if not isAliveChar(char) or not hrp then return false, false end
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not isAliveChar(char) or not hrp or not hum then return false, false end
 
-	setMovePhysicsLock(char, hrp, true)
+	hrp.Anchored = false
+	clearMovers(hrp)
+	zeroCharacterVelocity(char)
 
 	local dist = (hrp.Position - targetPos).Magnitude
 	if dist <= 1.2 then
-		hrp.Position = targetPos
+		hrp.CFrame = CFrame.lookAt(targetPos, targetPos + hrp.CFrame.LookVector)
 		zeroCharacterVelocity(char)
-		clearMovers(hrp)
 		return true, false
 	end
 
-	local speed = customSpeed or TWEEN_SPEED
-	local align, att = createMoveAlign(hrp, targetPos, speed)
+	local speed = math.max(customSpeed or TWEEN_SPEED, 1)
+	local duration = math.max(dist / speed, 0.02)
+	local goalCFrame = CFrame.lookAt(targetPos, targetPos + hrp.CFrame.LookVector)
 
+	local tween = TweenService:Create(
+		hrp,
+		TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out),
+		{ CFrame = goalCFrame }
+	)
+	activeTween = tween
+
+	local completed = false
+	local doneConn = tween.Completed:Connect(function()
+		completed = true
+	end)
+
+	tween:Play()
+
+	local elapsed = 0
 	local lastCheck = 0
-	local startClock = os.clock()
-	local maxWait = math.max(dist / math.max(speed, 1), 0.1) + 2.5
-
-	while not isUnloaded and activeMoveSequence and (moveToken == myToken) do
+	while not completed and not isUnloaded and activeMoveSequence and (moveToken == myToken) do
 		local c = LocalPlayer.Character
 		local r = getHrp(c)
 		local h = c and c:FindFirstChildOfClass("Humanoid")
 		if not c or not c.Parent or not r or not r.Parent or not h or h:GetState() == Enum.HumanoidStateType.Dead then
-			clearMovers(r)
+			pcall(function() tween:Cancel() end)
+			doneConn:Disconnect()
+			if activeTween == tween then activeTween = nil end
 			return false, false
 		end
 
 		if onStepCheck and (os.clock() - lastCheck) >= 0.03 then
 			lastCheck = os.clock()
 			if onStepCheck(c, r, targetPos) then
-				clearMovers(r)
+				pcall(function() tween:Cancel() end)
+				doneConn:Disconnect()
+				if activeTween == tween then activeTween = nil end
 				zeroCharacterVelocity(c)
 				return false, true
 			end
 		end
 
-		if align.Parent ~= r then
-			align, att = createMoveAlign(r, targetPos, speed)
-		else
-			align.Position = targetPos
+		elapsed += RunService.Heartbeat:Wait()
+		if elapsed > duration + 1.5 then
+			break
 		end
-
-		if (r.Position - targetPos).Magnitude <= 1.5 then
-			r.Position = targetPos
-			zeroCharacterVelocity(c)
-			clearMovers(r)
-			return true, false
-		end
-
-		if (os.clock() - startClock) >= maxWait then
-			clearMovers(r)
-			return false, false
-		end
-
-		RunService.Heartbeat:Wait()
 	end
 
-	clearMovers(hrp)
-	return false, false
+	doneConn:Disconnect()
+	if activeTween == tween then activeTween = nil end
+
+	if isUnloaded or not activeMoveSequence or moveToken ~= myToken then
+		pcall(function() tween:Cancel() end)
+		return false, false
+	end
+
+	local finalRoot = getHrp(LocalPlayer.Character)
+	if finalRoot then
+		finalRoot.CFrame = goalCFrame
+		zeroCharacterVelocity(LocalPlayer.Character)
+	end
+	return true, false
 end
 
 local function climbStraightSegment(targetY, myToken)
@@ -526,7 +505,7 @@ local function climbStraightSegment(targetY, myToken)
 		if r.Position.Y >= targetY - 1.5 then return true end
 
 		local goalPos = Vector3.new(r.Position.X, targetY, r.Position.Z)
-		if not moveSingleSegment(goalPos, myToken, nil, TWEEN_SPEED) then
+		if not tweenSingleSegment(goalPos, myToken, nil, TWEEN_SPEED) then
 			return false
 		end
 	end
@@ -545,7 +524,7 @@ local function climbToSkyWith400Scan(startBaseY, targetY, myToken)
 			if r.Position.Y >= stage400Y - 1.5 then break end
 
 			local goal400Pos = Vector3.new(r.Position.X, stage400Y, r.Position.Z)
-			if not moveSingleSegment(goal400Pos, myToken, nil, TWEEN_SPEED) then
+			if not tweenSingleSegment(goal400Pos, myToken, nil, TWEEN_SPEED) then
 				return false
 			end
 		end
@@ -562,7 +541,7 @@ local function climbToSkyWith400Scan(startBaseY, targetY, myToken)
 		if not c or not r then return false end
 		if r.Position.Y >= targetY - 1.5 then return true end
 
-		local ok, hitObstacle = moveSingleSegment(
+		local ok, hitObstacle = tweenSingleSegment(
 			Vector3.new(r.Position.X, targetY, r.Position.Z),
 			myToken,
 			function(currChar, currRoot)
@@ -579,7 +558,7 @@ local function climbToSkyWith400Scan(startBaseY, targetY, myToken)
 		if not cNow or not rNow then return false end
 
 		local dodgePos = findClearHorizontalDodgePos(rNow.Position, DODGE_HORIZONTAL_STUDS, cNow)
-		if not moveSingleSegment(dodgePos, myToken, nil, DODGE_SPEED) then
+		if not tweenSingleSegment(dodgePos, myToken, nil, DODGE_SPEED) then
 			return false
 		end
 
@@ -601,7 +580,6 @@ local function moveViaSkyToTarget(targetPos, onComplete)
 
 	cancelActiveMove()
 	stopFreeze()
-	setMovePhysicsLock(char, hrp, true)
 	setNoclip(true)
 
 	local myToken = moveToken
@@ -610,10 +588,8 @@ local function moveViaSkyToTarget(targetPos, onComplete)
 	task.spawn(function()
 		local function cleanupFail()
 			if moveToken == myToken then activeMoveSequence = false end
-			local curHrp = getHrp(LocalPlayer.Character)
-			if curHrp then clearMovers(curHrp) end
 			setNoclip(false)
-			setMovePhysicsLock(LocalPlayer.Character, curHrp, false)
+			restoreCharacterState(LocalPlayer.Character)
 		end
 
 		local function abortIfDone()
@@ -635,13 +611,13 @@ local function moveViaSkyToTarget(targetPos, onComplete)
 		local curRoot = getHrp(LocalPlayer.Character)
 		local climbY = curRoot and curRoot.Position.Y or skyGoalY
 		local aboveTargetPos = Vector3.new(targetPos.X, climbY, targetPos.Z)
-		if not moveSingleSegment(aboveTargetPos, myToken, nil, TWEEN_SPEED) then
+		if not tweenSingleSegment(aboveTargetPos, myToken, nil, TWEEN_SPEED) then
 			cleanupFail()
 			return
 		end
 		if abortIfDone() then return end
 
-		if not moveSingleSegment(targetPos, myToken, nil, TWEEN_SPEED) then
+		if not tweenSingleSegment(targetPos, myToken, nil, TWEEN_SPEED) then
 			cleanupFail()
 			return
 		end
@@ -651,12 +627,11 @@ local function moveViaSkyToTarget(targetPos, onComplete)
 		local finalChar = LocalPlayer.Character
 		local finalRoot = getHrp(finalChar)
 		if finalChar and finalRoot then
-			clearMovers(finalRoot)
-			finalRoot.Position = targetPos
+			finalRoot.CFrame = CFrame.lookAt(targetPos, targetPos + finalRoot.CFrame.LookVector)
 			zeroCharacterVelocity(finalChar)
 			if onComplete then onComplete(finalChar, finalRoot, targetPos) end
-			if not frozenPos then
-				setMovePhysicsLock(finalChar, finalRoot, false)
+			if not frozenCFrame then
+				restoreCharacterState(finalChar)
 			end
 		end
 	end)
@@ -754,7 +729,7 @@ local function goUpToPlatform()
 	local hrp = getHrp(char)
 	if not isAliveChar(char) or not hrp then return end
 
-	if not savedOriginPos then savedOriginPos = hrp.Position end
+	if not savedOriginCFrame then savedOriginCFrame = hrp.CFrame end
 
 	moveViaSkyToTarget(getTargetStandPos(), function(finalChar, root, landedPos)
 		if role == "alt" then startFreezeAtCurrentSpot(root, landedPos) end
@@ -770,11 +745,12 @@ local function goBackToOrigin()
 	if not isAliveChar(char) or not hrp then return end
 
 	stopFreeze()
+	local backPos = savedOriginCFrame and savedOriginCFrame.Position or hrp.Position
 
-	moveViaSkyToTarget(savedOriginPos or hrp.Position, function(finalChar)
+	moveViaSkyToTarget(backPos, function(finalChar)
 		zeroCharacterVelocity(finalChar)
 		setNoclip(false)
-		savedOriginPos = nil
+		savedOriginCFrame = nil
 	end)
 end
 
@@ -872,7 +848,7 @@ local function hookCharacter(char)
 			stopFreeze()
 			setNoclip(false)
 
-			if role == "alt" and (not isAutoReset97) and (not isButtonMode) and isActive and savedOriginPos then
+			if role == "alt" and (not isAutoReset97) and (not isButtonMode) and isActive and savedOriginCFrame then
 				respawnMovePending = true
 			end
 		end)
@@ -885,7 +861,7 @@ trackConn(LocalPlayer.CharacterAdded:Connect(function(newChar)
 	if isUnloaded then return end
 	hookCharacter(newChar)
 
-	if role == "alt" and (not isAutoReset97) and (not isButtonMode) and isActive and respawnMovePending and savedOriginPos then
+	if role == "alt" and (not isAutoReset97) and (not isButtonMode) and isActive and respawnMovePending and savedOriginCFrame then
 		respawnMovePending = false
 		local hrp = newChar:WaitForChild("HumanoidRootPart", 10)
 		local hum = newChar:WaitForChild("Humanoid", 10)
@@ -897,10 +873,10 @@ trackConn(LocalPlayer.CharacterAdded:Connect(function(newChar)
 			if isUnloaded then return end
 			task.wait(0.25)
 			if isUnloaded then return end
-			moveViaSkyToTarget(savedOriginPos, function(finalChar)
+			moveViaSkyToTarget(savedOriginCFrame.Position, function(finalChar)
 				zeroCharacterVelocity(finalChar)
 				setNoclip(false)
-				savedOriginPos = nil
+				savedOriginCFrame = nil
 			end)
 		end
 	end
@@ -943,7 +919,7 @@ local function unloadScript()
 	local existingGui = playerGui and playerGui:FindFirstChild("SkyPlatformControlGui")
 	if existingGui then pcall(function() existingGui:Destroy() end) end
 
-	customSetPoint, savedOriginPos, refreshActionButtonText, setPlatformFeedback = nil, nil, nil, nil
+	customSetPoint, savedOriginCFrame, refreshActionButtonText, setPlatformFeedback = nil, nil, nil, nil
 end
 
 local function fetchNoCacheRaw(url)

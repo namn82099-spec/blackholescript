@@ -60,6 +60,7 @@ local savedOriginCFrame = nil
 local refreshActionButtonText = nil
 local setPlatformFeedback = nil
 local activeGui = nil
+local triggerAutoUpdate = nil
 
 -- ==========================================
 -- LƯU & ĐỌC TỐC ĐỘ (TWEEN_SPEED & DODGE_SPEED)
@@ -878,7 +879,7 @@ local function attachHp97Watcher(char)
 end
 
 -- ==========================================
--- ĐỒNG BỘ ĐIỂM SET & LỆNH CHAT ($re, $tspeed, $dspeed, $go, $cmd_ta, $cmd_tv)
+-- ĐỒNG BỘ ĐIỂM SET & LỆNH CHAT ($re, $tspeed, $dspeed, $go, $upd, $cmd_ta, $cmd_tv)
 -- ==========================================
 local SYNC_PREFIX = "__SKYPLAT_POINT__:"
 
@@ -901,7 +902,7 @@ end
 local function announceCommandsEN()
 	local lines = {
 		"Commands: re (alt reset + 6.5s press R), tspeed{num} (set tween speed + save), dspeed{num} (set dodge speed + save)",
-		"More commands: go (tween to set plat with obstacle dodge), cmd_ta (EN list), cmd_tv (VI list)"
+		"More commands: go (tween to set plat with obstacle dodge), upd (alt auto update), cmd_ta (EN list), cmd_tv (VI list)"
 	}
 	for _, line in ipairs(lines) do
 		sendAntiTagChat(line)
@@ -912,7 +913,7 @@ end
 local function announceCommandsVI()
 	local lines = {
 		"Lenh: re (alt tu reset + doi 6.5s an R), tspeed{so} (doi tween speed + luu), dspeed{so} (doi dodge speed + luu)",
-		"Them lenh: go (bay len diem set co ne vat can), cmd_ta (danh sach tieng Anh), cmd_tv (danh sach tieng Viet)"
+		"Them lenh: go (bay len diem set co ne vat can), upd (alt tu update), cmd_ta (danh sach tieng Anh), cmd_tv (danh sach tieng Viet)"
 	}
 	for _, line in ipairs(lines) do
 		sendAntiTagChat(line)
@@ -966,6 +967,13 @@ local function handleOwnerChatCommand(rawMsg)
 			if refreshActionButtonText then refreshActionButtonText() end
 		end
 		goUpToPlatform()
+		return
+	end
+
+	if lower == "$upd" then
+		if role == "alt" and triggerAutoUpdate then
+			triggerAutoUpdate(nil)
+		end
 		return
 	end
 
@@ -1111,7 +1119,7 @@ local function fetchNoCacheRaw(url)
 	return game:HttpGet(cacheBustUrl, true)
 end
 
-local function triggerAutoUpdate(updateBtn)
+triggerAutoUpdate = function(updateBtn)
 	if isUnloaded or isUpdating then return end
 	isUpdating = true
 

@@ -6,12 +6,12 @@ local OwnerName = "tinhtrungcovij"
 local FIXED_PLATFORM_POS = Vector3.new(0, 1000, 0)
 local PLATFORM_SIZE = Vector3.new(200, 2, 200)
 local PLATFORM_NAME = "SharedSkyPlatform_Client"
-local TWEEN_SPEED = 210
-local DODGE_SPEED = 150
-local DODGE_MARGIN = 24
+local TWEEN_SPEED = 250
+local DODGE_SPEED = 190
+local DODGE_HORIZONTAL_STUDS = 450
 local LOOK_AHEAD_STUDS = 28
+local STAGE_1_CLIMB_STUDS = 450
 local SKY_CLIMB_STUDS = 700
-local OBSTACLE_CHECK_MAX_CLIMB_STUDS = 650
 local M1_SPAM_INTERVAL = 0.08
 
 local Players = game:GetService("Players")
@@ -295,7 +295,7 @@ local function startFreezeAtCurrentSpot(hrp, overrideCFrame)
 end
 
 -- ==========================================
--- DÒ NHẸ BẰNG RAYCAST & BƯỚC NÉ VẬT CẢN (DƯỚI 650 STUD)
+-- QUÉT VẬT CẢN TRÊN ĐẦU (TỪ 450 STUD TRỞ ĐI) & NÉ NGANG RANDOM 450 STUD
 -- ==========================================
 local cachedRayParams = nil
 local cachedRayChar = nil
@@ -324,40 +324,25 @@ local function isSolidHit(res)
 	return p:IsA("BasePart") and p.CanCollide and p.Transparency < 0.95
 end
 
-local function castRay(origin, vec, char)
-	if vec.Magnitude <= 0.05 then return nil end
-	local res = workspace:Raycast(origin, vec, getRayParams(char))
-	return isSolidHit(res) and res or nil
+local function hasOverheadObstacle(currChar, currRoot, goalY)
+	local remY = goalY - currRoot.Position.Y
+	if remY <= 0.1 then return false end
+	local upVec = Vector3.new(0, math.min(remY, LOOK_AHEAD_STUDS), 0)
+	local res = workspace:Raycast(currRoot.Position, upVec, getRayParams(currChar))
+	return isSolidHit(res)
 end
 
-local function stepDodgeObstacle(currentPos, goalPos, hitRes, char)
-	local delta = goalPos - currentPos
-	local horiz = Vector3.new(delta.X, 0, delta.Z)
-	local fH = (horiz.Magnitude > 0.05) and horiz.Unit or Vector3.new(0, 0, -1)
-	local right = Vector3.new(-fH.Z, 0, fH.X)
-
-	local n = hitRes and hitRes.Normal or Vector3.zero
-	local nH = Vector3.new(n.X, 0, n.Z)
-	local dirA = (nH.Magnitude > 0.1) and nH.Unit or right
-	local dirB = -dirA
-
-	for _, dist in ipairs({ DODGE_MARGIN, DODGE_MARGIN + 22, DODGE_MARGIN + 44 }) do
-		local candA = Vector3.new(currentPos.X + dirA.X * dist, currentPos.Y, currentPos.Z + dirA.Z * dist)
-		if not castRay(currentPos, candA - currentPos, char) then
-			return candA
-		end
-
-		local candB = Vector3.new(currentPos.X + dirB.X * dist, currentPos.Y, currentPos.Z + dirB.Z * dist)
-		if not castRay(currentPos, candB - currentPos, char) then
-			return candB
-		end
-	end
-
-	return Vector3.new(currentPos.X + right.X * DODGE_MARGIN, currentPos.Y, currentPos.Z + right.Z * DODGE_MARGIN)
+local function getRandomHorizontalDodgePos(currentPos, dist)
+	local angle = math.random() * math.pi * 2
+	return Vector3.new(
+		currentPos.X + math.cos(angle) * dist,
+		currentPos.Y,
+		currentPos.Z + math.sin(angle) * dist
+	)
 end
 
 -- ==========================================
--- DODGE TWEEN (TweenService) & NÉ VẬT CẢN DƯỚI 650 STUD
+-- DODGE TWEEN (TweenService)
 -- ==========================================
 local function cancelActiveTween()
 	tweenToken += 1
@@ -369,10 +354,10 @@ local function cancelActiveTween()
 end
 
 local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpeed)
-	if isUnloaded or not activeTweenSequence or tweenToken ~= myToken then return false, false, nil end
+	if isUnloaded or not activeTweenSequence or tweenToken ~= myToken then return false, false end
 	local char = LocalPlayer.Character
 	local hrp = getHrp(char)
-	if not isAliveChar(char) or not hrp then return false, false, nil end
+	if not isAliveChar(char) or not hrp then return false, false end
 
 	setTweenPhysicsLock(char, hrp, true)
 
@@ -384,10 +369,10 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 	local distance = (hrp.Position - targetCFrame.Position).Magnitude
 	if distance <= 0.25 then
 		hrp.CFrame = targetCFrame
-		return true, false, nil
+		return true, false
 	end
 
-	local completed, cancelled = false, false
+	local completed, cancelled, triggered = false, false, false
 	local duration = math.max(distance / (customSpeed or TWEEN_SPEED), 0.02)
 	local tween = TweenService:Create(
 		hrp,
@@ -415,16 +400,16 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 		if not c or not c.Parent or not r or not r.Parent or not h or h:GetState() == Enum.HumanoidStateType.Dead then
 			if conn then conn:Disconnect() end
 			tween:Cancel()
-			return false, false, nil
+			return false, false
 		end
 
 		if onStepCheck and (os.clock() - lastCheck) >= 0.05 then
 			lastCheck = os.clock()
-			local dodgePos = onStepCheck(c, r, targetCFrame.Position)
-			if dodgePos then
+			if onStepCheck(c, r, targetCFrame.Position) then
+				triggered = true
 				if conn then conn:Disconnect() end
 				tween:Cancel()
-				return false, true, dodgePos
+				return false, true
 			end
 		end
 
@@ -432,7 +417,7 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 			if conn then conn:Disconnect() end
 			tween:Cancel()
 			r.CFrame = targetCFrame
-			return true, false, nil
+			return true, false
 		end
 
 		RunService.Heartbeat:Wait()
@@ -441,14 +426,13 @@ local function tweenSingleSegment(targetCFrame, myToken, onStepCheck, customSpee
 	if conn then conn:Disconnect() end
 	if isUnloaded or not activeTweenSequence or tweenToken ~= myToken then
 		tween:Cancel()
-		return false, false, nil
+		return false, false
 	end
 
-	return completed, false, nil
+	return completed, triggered
 end
 
-local function climbStraightToHeight(targetY, rotationCF, startBaseY, myToken)
-	local dodgeAttempts = 0
+local function climbStraightSegment(targetY, rotationCF, myToken)
 	while not isUnloaded and activeTweenSequence and (tweenToken == myToken) do
 		local c = LocalPlayer.Character
 		local r = getHrp(c)
@@ -456,34 +440,69 @@ local function climbStraightToHeight(targetY, rotationCF, startBaseY, myToken)
 		if r.Position.Y >= targetY - 0.5 then return true end
 
 		local goalCF = CFrame.new(r.Position.X, targetY, r.Position.Z) * rotationCF
-		local shouldCheckObstacle = ((r.Position.Y - startBaseY) < OBSTACLE_CHECK_MAX_CLIMB_STUDS) and (dodgeAttempts < 8)
+		if not tweenSingleSegment(goalCF, myToken, nil, TWEEN_SPEED) then
+			return false
+		end
+	end
+	return false
+end
 
-		local ok, shouldDodge, dodgePos = tweenSingleSegment(goalCF, myToken, shouldCheckObstacle and function(currChar, currRoot, segGoal)
-			if (currRoot.Position.Y - startBaseY) >= OBSTACLE_CHECK_MAX_CLIMB_STUDS then
-				return nil
+local function climbToSkyWith450Scan(startBaseY, targetY, rotationCF, myToken)
+	local stage450Y = startBaseY + STAGE_1_CLIMB_STUDS
+
+	-- 1. Từ 0 đến 450 stud: bay thẳng lên, có vật cản cũng không né
+	if targetY > stage450Y then
+		while not isUnloaded and activeTweenSequence and (tweenToken == myToken) do
+			local c = LocalPlayer.Character
+			local r = getHrp(c)
+			if not c or not r then return false end
+			if r.Position.Y >= stage450Y - 0.5 then break end
+
+			local goal450CF = CFrame.new(r.Position.X, stage450Y, r.Position.Z) * rotationCF
+			if not tweenSingleSegment(goal450CF, myToken, nil, TWEEN_SPEED) then
+				return false
 			end
-			local remY = segGoal.Y - currRoot.Position.Y
-			if remY <= 0.1 then return nil end
-			local upVec = Vector3.new(0, math.min(remY, LOOK_AHEAD_STUDS), 0)
-			local hit = castRay(currRoot.Position, upVec, currChar)
-			if hit then
-				return stepDodgeObstacle(currRoot.Position, segGoal, hit, currChar)
-			end
-			return nil
-		end or nil, TWEEN_SPEED)
+		end
+	else
+		return climbStraightSegment(targetY, rotationCF, myToken)
+	end
+
+	if isUnloaded or not activeTweenSequence or tweenToken ~= myToken then return false end
+
+	-- 2. Từ 450 stud trở đi: quét liên tục vật cản trên đầu; có vật cản thì bay ngang random 450 stud rồi bay lên đủ 700 stud; không có thì cứ bay lên như cũ
+	while not isUnloaded and activeTweenSequence and (tweenToken == myToken) do
+		local c = LocalPlayer.Character
+		local r = getHrp(c)
+		if not c or not r then return false end
+		if r.Position.Y >= targetY - 0.5 then return true end
+
+		local ok, hitObstacle = tweenSingleSegment(
+			CFrame.new(r.Position.X, targetY, r.Position.Z) * rotationCF,
+			myToken,
+			function(currChar, currRoot, segGoal)
+				return hasOverheadObstacle(currChar, currRoot, segGoal.Y)
+			end,
+			TWEEN_SPEED
+		)
 
 		if ok then return true end
-		if not (shouldDodge and dodgePos) then return false end
+		if not hitObstacle then return false end
 
-		dodgeAttempts += 1
-		local c2 = LocalPlayer.Character
-		local r2 = getHrp(c2)
-		if not c2 or not r2 then return false end
+		local cNow = LocalPlayer.Character
+		local rNow = getHrp(cNow)
+		if not cNow or not rNow then return false end
 
-		local sideCF = CFrame.new(dodgePos.X, r2.Position.Y, dodgePos.Z) * rotationCF
+		local dodgePos = getRandomHorizontalDodgePos(rNow.Position, DODGE_HORIZONTAL_STUDS)
+		local sideCF = CFrame.new(dodgePos.X, rNow.Position.Y, dodgePos.Z) * rotationCF
 		if not tweenSingleSegment(sideCF, myToken, nil, DODGE_SPEED) then
 			return false
 		end
+
+		local full700Y = math.max(targetY, startBaseY + SKY_CLIMB_STUDS)
+		if not climbStraightSegment(full700Y, rotationCF, myToken) then
+			return false
+		end
+		return true
 	end
 
 	return false
@@ -519,14 +538,15 @@ local function tweenViaSkyToTarget(targetCFrame, onComplete)
 		end
 
 		local startPos = hrp.Position
-		if not climbStraightToHeight(startPos.Y + SKY_CLIMB_STUDS, targetCFrame.Rotation, startPos.Y, myToken) then
+		local skyGoalY = math.max(startPos.Y + SKY_CLIMB_STUDS, targetCFrame.Position.Y)
+		if not climbToSkyWith450Scan(startPos.Y, skyGoalY, targetCFrame.Rotation, myToken) then
 			cleanupFail()
 			return
 		end
 		if abortIfDone() then return end
 
 		local curRoot = getHrp(LocalPlayer.Character)
-		local climbY = curRoot and curRoot.Position.Y or (startPos.Y + SKY_CLIMB_STUDS)
+		local climbY = curRoot and curRoot.Position.Y or skyGoalY
 		local aboveTargetCF = CFrame.new(targetCFrame.Position.X, climbY, targetCFrame.Position.Z) * targetCFrame.Rotation
 		if not tweenSingleSegment(aboveTargetCF, myToken, nil, TWEEN_SPEED) then
 			cleanupFail()
